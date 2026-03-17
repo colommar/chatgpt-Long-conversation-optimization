@@ -1,6 +1,10 @@
 # ChatGPT Conversation Toolkit 🧰✨
 
+简体中文 | [English](./README.en.md)
+
 适用于 `ChatGPT Web` 的浏览器插件，主要解决长会话浏览、导出、搜索、Prompt 管理、时间线定位和对话文件夹管理问题 🚀
+
+当前活跃维护者：`bujue3709`（主要 / 唯一活跃维护者）
 
 当前支持站点 🌐
 
@@ -39,11 +43,11 @@
 
 1. 打开 `about:debugging#/runtime/this-firefox`
 2. 点击“临时载入附加组件”
-3. 选择当前项目根目录下的 [manifest.json](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/manifest.json)
+3. 选择当前项目根目录下的 [manifest.json](./manifest.json)
 
 ## 界面示意 🖼️
 
-![插件示意图](/image/image.png)
+![插件示意图](./image/image.png)
 
 
 ## 使用说明 ▶️
@@ -162,36 +166,36 @@ manifest.json
 
 ### 模块职责 🧭
 
-- [core/state.js](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/core/state.js)
+- [core/state.js](./core/state.js)
   - 全局常量、运行时状态、基础配置 🧠
-- [utils/dom.js](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/utils/dom.js)
+- [utils/dom.js](./utils/dom.js)
   - DOM 读取、消息节点识别、通用拖拽调度 🧩
-- [utils/storage.js](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/utils/storage.js)
+- [utils/storage.js](./utils/storage.js)
   - 本地持久化、位置和显示状态保存 💾
-- [ui/theme.js](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/ui/theme.js)
+- [ui/theme.js](./ui/theme.js)
   - ChatGPT 明暗主题识别与同步 🎨
-- [ui/toolbar.js](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/ui/toolbar.js)
+- [ui/toolbar.js](./ui/toolbar.js)
   - 工具栏、最小化按钮、拖拽交互 🧰
-- [features/collapse.js](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/features/collapse.js)
+- [features/collapse.js](./features/collapse.js)
   - 长会话折叠与恢复 🧹
-- [features/export.js](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/features/export.js)
+- [features/export.js](./features/export.js)
   - 会话导出 📦
-- [features/folders.js](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/features/folders.js)
+- [features/folders.js](./features/folders.js)
   - 侧边栏对话文件夹管理、拖拽归类、本地持久化恢复 📁
-- [features/search.js](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/features/search.js)
+- [features/search.js](./features/search.js)
   - 消息搜索与跳转 🔍
-- [features/timeline.js](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/features/timeline.js)
+- [features/timeline.js](./features/timeline.js)
   - 时间线渲染、预览、滚动、拖拽、节点同步 🕒
-- [features/prompt-library.js](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/features/prompt-library.js)
+- [features/prompt-library.js](./features/prompt-library.js)
   - Prompt 指令库读写、筛选、复制、导入导出 📚
-- [contentScript.js](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/contentScript.js)
+- [contentScript.js](./contentScript.js)
   - 启动入口、初始化、DOM 观察器 🚦
-- [styles.css](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/styles.css)
+- [styles.css](./styles.css)
   - 工具栏、时间线、Prompt 弹窗样式 🎨
 
 ## 可调整配置 ⚙️
 
-常用配置位于 [core/state.js](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/core/state.js)。
+常用配置位于 [core/state.js](./core/state.js)。
 
 例如：
 
@@ -320,7 +324,7 @@ Prompt 指令库导出为对象格式：
 
 - 当前项目不依赖打包器。
 - 修改脚本后，浏览器扩展页重新加载插件即可生效。
-- 内容脚本的执行顺序由 [manifest.json](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/manifest.json) 中 `content_scripts.js` 数组控制。
+- 内容脚本的执行顺序由 [manifest.json](./manifest.json) 中 `content_scripts.js` 数组控制。
 
 ## 已知限制 ⚠️
 
@@ -331,7 +335,7 @@ Prompt 指令库导出为对象格式：
 
 ## License 📄
 
-本项目采用 [MIT License](/C:/Users/marke/Desktop/插件/chatgpt-Long-conversation-optimization-main/LICENSE)。
+本项目采用 [MIT License](./LICENSE)。
 
 这意味着你可以在遵守 MIT 许可证文本保留要求的前提下，自由使用、复制、修改、发布、分发，且允许商业使用与再分发。
 
