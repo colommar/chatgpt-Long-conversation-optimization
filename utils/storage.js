@@ -32,11 +32,11 @@ const loadTimelineVisibility = () => {
   try {
     const stored = localStorage.getItem(TIMELINE_VISIBLE_KEY);
     if (stored === null) {
-      return true;
+      return false;
     }
     return stored !== "0" && stored !== "false";
   } catch (error) {
-    return true;
+    return false;
   }
 };
 
