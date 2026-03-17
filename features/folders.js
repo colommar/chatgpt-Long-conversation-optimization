@@ -11,6 +11,7 @@ const FOLDER_MANAGER_BOUND_ATTR = "data-toolkit-folder-manager-bound";
 const FOLDER_HEADER_CLASS = "chatgpt-toolkit-folder-header";
 const FOLDER_EMPTY_CLASS = "chatgpt-toolkit-folder-empty";
 const FOLDER_DRAGGING_ATTR = "data-toolkit-folder-dragging";
+const FOLDER_SORTING_ATTR = "data-toolkit-folder-sorting";
 const FOLDER_HEADING_TEXTS = ["你的聊天", "Chats", "Your chats"];
 
 const getSafeEventTarget = (event) => (event?.target instanceof Element ? event.target : null);
@@ -357,10 +358,16 @@ const openFolderMenu = (folderId, trigger) => {
   const triggerRect = trigger.getBoundingClientRect();
   const menuWidth = menu.offsetWidth;
   const menuHeight = menu.offsetHeight;
+  const sidebarAnchor =
+    folderState.section instanceof HTMLElement
+      ? folderState.section.getBoundingClientRect()
+      : folderState.history instanceof HTMLElement
+        ? folderState.history.getBoundingClientRect()
+        : triggerRect;
 
-  let left = triggerRect.right - menuWidth;
-  if (left < 8) {
-    left = 8;
+  let left = sidebarAnchor.right + 8;
+  if (left + menuWidth > window.innerWidth - 8) {
+    left = Math.max(triggerRect.right + 8, window.innerWidth - menuWidth - 8);
   }
   if (left + menuWidth > window.innerWidth - 8) {
     left = Math.max(8, window.innerWidth - menuWidth - 8);
@@ -393,6 +400,24 @@ const clearDropZoneHighlight = () => {
     .forEach((node) => node.classList.remove("is-drop-target"));
 };
 
+const clearFolderSortHighlight = () => {
+  if (!(folderState.history instanceof HTMLElement)) {
+    folderState.currentSortZoneKey = "";
+    document.documentElement.removeAttribute(FOLDER_SORTING_ATTR);
+    return;
+  }
+
+  folderState.currentSortZoneKey = "";
+  document.documentElement.removeAttribute(FOLDER_SORTING_ATTR);
+  folderState.history
+    .querySelectorAll(".is-sort-target-before, .is-sort-target-after, .is-sort-dragging")
+    .forEach((node) => {
+      node.classList.remove("is-sort-target-before");
+      node.classList.remove("is-sort-target-after");
+      node.classList.remove("is-sort-dragging");
+    });
+};
+
 const setDropZoneHighlight = (element, key) => {
   if (!(element instanceof HTMLElement)) {
     clearDropZoneHighlight();
@@ -408,10 +433,36 @@ const setDropZoneHighlight = (element, key) => {
   element.classList.add("is-drop-target");
 };
 
+const setFolderSortHighlight = (element, key, position) => {
+  if (!(element instanceof HTMLElement)) {
+    clearFolderSortHighlight();
+    return;
+  }
+
+  const nextClass = position === "after" ? "is-sort-target-after" : "is-sort-target-before";
+  if (folderState.currentSortZoneKey === key && element.classList.contains(nextClass)) {
+    return;
+  }
+
+  clearFolderSortHighlight();
+  folderState.currentSortZoneKey = key;
+  document.documentElement.setAttribute(FOLDER_SORTING_ATTR, "1");
+  element.classList.add(nextClass);
+
+  const draggingHeader = folderState.history?.querySelector(
+    `.${FOLDER_HEADER_CLASS}[data-folder-id="${folderState.draggingFolderId || ""}"]`,
+  );
+  if (draggingHeader instanceof HTMLElement) {
+    draggingHeader.classList.add("is-sort-dragging");
+  }
+};
+
 const clearFolderDragState = () => {
   folderState.draggingConversationId = null;
+  folderState.draggingFolderId = null;
   document.documentElement.removeAttribute(FOLDER_DRAGGING_ATTR);
   clearDropZoneHighlight();
+  clearFolderSortHighlight();
 
   if (folderState.refreshPending) {
     folderState.refreshPending = false;
@@ -549,6 +600,50 @@ const toggleFolder = (folderId) => {
   }
 
   folder.collapsed = !folder.collapsed;
+  persistFolderState();
+  scheduleFolderRefresh();
+};
+
+const reorderFolders = (draggedFolderId, targetFolderId, position) => {
+  if (!draggedFolderId) {
+    return;
+  }
+
+  const sortedFolders = getSortedFolders();
+  if (sortedFolders.length < 2) {
+    return;
+  }
+
+  const folderMap = new Map(sortedFolders.map((folder) => [folder.id, folder]));
+  const draggedFolder = folderMap.get(draggedFolderId);
+  if (!draggedFolder) {
+    return;
+  }
+
+  const remainingFolders = sortedFolders.filter((folder) => folder.id !== draggedFolderId);
+  let insertIndex = remainingFolders.length;
+
+  if (targetFolderId) {
+    const targetIndex = remainingFolders.findIndex((folder) => folder.id === targetFolderId);
+    if (targetIndex === -1) {
+      return;
+    }
+    insertIndex = position === "after" ? targetIndex + 1 : targetIndex;
+  }
+
+  const nextOrderIds = remainingFolders.map((folder) => folder.id);
+  nextOrderIds.splice(insertIndex, 0, draggedFolderId);
+
+  const currentOrderIds = sortedFolders.map((folder) => folder.id);
+  if (nextOrderIds.join("|") === currentOrderIds.join("|")) {
+    return;
+  }
+
+  folderState.folders = nextOrderIds.map((folderId, index) => ({
+    ...folderMap.get(folderId),
+    order: index,
+  }));
+
   persistFolderState();
   scheduleFolderRefresh();
 };
@@ -886,6 +981,124 @@ const getDropZoneFromEvent = (event) => {
   return getDropZoneFromManagedArea(event?.clientX, event?.clientY);
 };
 
+const getFolderSortPlacement = (clientX, clientY) => {
+  if (!(folderState.history instanceof HTMLElement) || !folderState.draggingFolderId) {
+    return null;
+  }
+
+  const historyRect = folderState.history.getBoundingClientRect();
+  if (
+    !Number.isFinite(clientX) ||
+    !Number.isFinite(clientY) ||
+    clientX < historyRect.left - 16 ||
+    clientX > historyRect.right + 16 ||
+    clientY < historyRect.top - 8 ||
+    clientY > historyRect.bottom + 8
+  ) {
+    return null;
+  }
+
+  const historyChildren = Array.from(folderState.history.children).filter(
+    (child) => child instanceof HTMLElement,
+  );
+  const segments = getSortedFolders()
+    .filter((folder) => folder.id !== folderState.draggingFolderId)
+    .map((folder) => {
+      const header = historyChildren.find(
+        (child) =>
+          child.classList.contains(FOLDER_HEADER_CLASS) &&
+          child.dataset.folderId === folder.id,
+      );
+      if (!(header instanceof HTMLElement)) {
+        return null;
+      }
+
+      const segmentNodes = historyChildren.filter((child) => {
+        if (!(child instanceof HTMLElement)) {
+          return false;
+        }
+
+        if (child === header) {
+          return true;
+        }
+
+        if (child.classList.contains(FOLDER_EMPTY_CLASS) && child.dataset.folderId === folder.id) {
+          return true;
+        }
+
+        return child instanceof HTMLAnchorElement && child.getAttribute(FOLDER_ITEM_ATTR) === folder.id;
+      });
+
+      const segmentRects = segmentNodes.map((node) => getVisibleRect(node)).filter(Boolean);
+      if (segmentRects.length === 0) {
+        return null;
+      }
+
+      return {
+        folderId: folder.id,
+        header,
+        top: Math.min(...segmentRects.map((rect) => rect.top)),
+        bottom: Math.max(...segmentRects.map((rect) => rect.bottom)),
+      };
+    })
+    .filter(Boolean);
+
+  if (segments.length === 0) {
+    return null;
+  }
+
+  if (clientY <= segments[0].top) {
+    return {
+      key: `before:${segments[0].folderId}`,
+      targetFolderId: segments[0].folderId,
+      position: "before",
+      element: segments[0].header,
+    };
+  }
+
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
+    const midpoint = segment.top + (segment.bottom - segment.top) / 2;
+
+    if (clientY <= segment.bottom) {
+      return {
+        key: `${clientY < midpoint ? "before" : "after"}:${segment.folderId}`,
+        targetFolderId: segment.folderId,
+        position: clientY < midpoint ? "before" : "after",
+        element: segment.header,
+      };
+    }
+
+    const nextSegment = segments[index + 1];
+    if (nextSegment && clientY < nextSegment.top) {
+      const gapMidpoint = segment.bottom + (nextSegment.top - segment.bottom) / 2;
+      if (clientY < gapMidpoint) {
+        return {
+          key: `after:${segment.folderId}`,
+          targetFolderId: segment.folderId,
+          position: "after",
+          element: segment.header,
+        };
+      }
+
+      return {
+        key: `before:${nextSegment.folderId}`,
+        targetFolderId: nextSegment.folderId,
+        position: "before",
+        element: nextSegment.header,
+      };
+    }
+  }
+
+  const lastSegment = segments[segments.length - 1];
+  return {
+    key: `after:${lastSegment.folderId}`,
+    targetFolderId: lastSegment.folderId,
+    position: "after",
+    element: lastSegment.header,
+  };
+};
+
 const renderFolders = () => {
   hydrateFolders();
 
@@ -984,6 +1197,7 @@ const renderFolders = () => {
       currentHeaders.delete(folder.id);
       header.dataset.folderId = folder.id;
       header.dataset.collapsed = folder.collapsed ? "1" : "0";
+      header.setAttribute("draggable", "true");
       header.style.order = String(nextOrder++);
 
       const folderName = header.querySelector(".chatgpt-toolkit-folder-name");
@@ -999,6 +1213,7 @@ const renderFolders = () => {
       const menuButton = header.querySelector("[data-folder-action='open-menu']");
       if (menuButton instanceof HTMLElement) {
         menuButton.dataset.folderId = folder.id;
+        menuButton.setAttribute("draggable", "false");
       }
 
       const folderItems = groupedItems.get(folder.id) || [];
@@ -1062,7 +1277,7 @@ const renderFolders = () => {
 const scheduleFolderRefresh = () => {
   hydrateFolders();
 
-  if (folderState.draggingConversationId) {
+  if (folderState.draggingConversationId || folderState.draggingFolderId) {
     folderState.refreshPending = true;
     return;
   }
@@ -1079,6 +1294,10 @@ const scheduleFolderRefresh = () => {
 };
 
 const handleFolderHistoryClick = (event) => {
+  if (folderState.draggingFolderId) {
+    return;
+  }
+
   const target = getSafeEventTarget(event);
   if (!(target instanceof Element) || !(folderState.history instanceof HTMLElement)) {
     return;
@@ -1103,6 +1322,35 @@ const handleFolderHistoryClick = (event) => {
 
 const handleFolderDragStart = (event) => {
   const target = getSafeEventTarget(event);
+  const folderHeader =
+    target instanceof Element ? target.closest(`.${FOLDER_HEADER_CLASS}`) : null;
+  if (
+    folderHeader instanceof HTMLElement &&
+    folderHeader.parentElement === folderState.history &&
+    !target?.closest("[data-folder-action='open-menu']")
+  ) {
+    const folderId = folderHeader.dataset.folderId || "";
+    if (!folderId || folderState.folders.length < 2) {
+      return;
+    }
+
+    folderState.draggingFolderId = folderId;
+    folderState.draggingConversationId = null;
+    document.documentElement.setAttribute(FOLDER_SORTING_ATTR, "1");
+    clearDropZoneHighlight();
+    folderHeader.classList.add("is-sort-dragging");
+
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      try {
+        event.dataTransfer.setData("text/plain", `folder:${folderId}`);
+      } catch (error) {
+        // Ignore drag payload errors.
+      }
+    }
+    return;
+  }
+
   const conversationItem = getConversationItemFromTarget(target);
   if (!(conversationItem instanceof HTMLAnchorElement)) {
     return;
@@ -1114,6 +1362,8 @@ const handleFolderDragStart = (event) => {
   }
 
   folderState.draggingConversationId = conversationId;
+  folderState.draggingFolderId = null;
+  clearFolderSortHighlight();
   document.documentElement.setAttribute(FOLDER_DRAGGING_ATTR, "1");
 
   if (event.dataTransfer) {
@@ -1127,6 +1377,21 @@ const handleFolderDragStart = (event) => {
 };
 
 const handleFolderDragOver = (event) => {
+  if (folderState.draggingFolderId) {
+    const placement = getFolderSortPlacement(event?.clientX, event?.clientY);
+    if (!placement) {
+      clearFolderSortHighlight();
+      return;
+    }
+
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "move";
+    }
+    setFolderSortHighlight(placement.element, placement.key, placement.position);
+    return;
+  }
+
   if (!folderState.draggingConversationId) {
     return;
   }
@@ -1149,6 +1414,20 @@ const handleFolderDragOver = (event) => {
 };
 
 const handleFolderDrop = (event) => {
+  if (folderState.draggingFolderId) {
+    const draggedFolderId = folderState.draggingFolderId;
+    const placement = getFolderSortPlacement(event?.clientX, event?.clientY);
+    clearFolderDragState();
+
+    if (!placement) {
+      return;
+    }
+
+    event.preventDefault();
+    reorderFolders(draggedFolderId, placement.targetFolderId, placement.position);
+    return;
+  }
+
   if (!folderState.draggingConversationId) {
     return;
   }

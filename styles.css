@@ -1581,6 +1581,32 @@ html[data-toolkit-folder-dragging="1"] .chatgpt-toolkit-folder-menu-btn:hover {
     color var(--toolkit-transition-fast);
 }
 
+.chatgpt-toolkit-folder-header[draggable="true"] {
+  cursor: grab;
+}
+
+html[data-toolkit-folder-sorting="1"] .chatgpt-toolkit-folder-header[draggable="true"] {
+  user-select: none;
+}
+
+.chatgpt-toolkit-folder-header.is-sort-dragging {
+  opacity: 0.56;
+  cursor: grabbing;
+}
+
+.chatgpt-toolkit-folder-header.is-sort-target-before,
+.chatgpt-toolkit-folder-header.is-sort-target-after {
+  background: var(--folder-surface-hover);
+}
+
+.chatgpt-toolkit-folder-header.is-sort-target-before {
+  box-shadow: inset 0 2px 0 var(--folder-accent);
+}
+
+.chatgpt-toolkit-folder-header.is-sort-target-after {
+  box-shadow: inset 0 -2px 0 var(--folder-accent);
+}
+
 .chatgpt-toolkit-folder-chevron {
   display: inline-flex;
   align-items: center;

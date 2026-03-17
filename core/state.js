@@ -86,7 +86,9 @@ const folderState = {
   history: null,
   menuFolderId: null,
   draggingConversationId: null,
+  draggingFolderId: null,
   currentDropZoneKey: "",
+  currentSortZoneKey: "",
   refreshQueued: false,
   refreshPending: false,
 };
