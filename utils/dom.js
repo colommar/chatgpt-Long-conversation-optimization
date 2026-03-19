@@ -29,6 +29,19 @@ const resetConversationState = () => {
   state.searchQuery = '';
   state.searchMatches = [];
   state.currentMatchIndex = -1;
+
+  if (typeof timelineState !== "undefined" && timelineState) {
+    timelineState.items = [];
+    timelineState.sourceNodes = [];
+    timelineState.sourceSignature = "";
+    timelineState.totalUserCount = 0;
+    timelineState.activeIndex = -1;
+    timelineState.hoverIndex = -1;
+    timelineState.signature = "";
+    timelineState.contentHeight = 0;
+    timelineState.rendered = false;
+    timelineState.refreshPending = false;
+  }
 };
 
 const ensureConversationState = () => {

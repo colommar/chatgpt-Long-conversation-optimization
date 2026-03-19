@@ -65,6 +65,8 @@ const promptState = {
 };
 const timelineState = {
   items: [],
+  sourceNodes: [],
+  sourceSignature: "",
   totalUserCount: 0,
   activeIndex: -1,
   hoverIndex: -1,

@@ -41,6 +41,43 @@ const ensureTimelineTrackContent = (track) => {
 const getTimelineMessageKey = (node, index) =>
   node.getAttribute("data-message-id") || node.getAttribute("data-testid") || `timeline-user-${index}`;
 
+const getTimelineSourceNodes = () => {
+  const main = document.querySelector("main");
+  if (!main) {
+    return [];
+  }
+
+  const candidates = Array.from(main.querySelectorAll('[data-message-author-role="user"]'));
+  const normalized = candidates.map((node) => normalizeMessageNode(node)).filter(Boolean);
+
+  const filteredByConversation = (() => {
+    if (!state.conversationKey) {
+      return normalized;
+    }
+    const scoped = normalized.filter((node) => {
+      const nodeConversationId = getNodeConversationId(node);
+      return !nodeConversationId || nodeConversationId === state.conversationKey;
+    });
+    return scoped.length > 0 ? scoped : normalized;
+  })();
+
+  const uniqueNodes = [];
+  const seen = new Set();
+  filteredByConversation.forEach((node, index) => {
+    const key =
+      node.getAttribute("data-message-id") ||
+      node.getAttribute("data-testid") ||
+      `timeline-source-${index}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    uniqueNodes.push(node);
+  });
+
+  return uniqueNodes;
+};
+
 const normalizeTimelineText = (text) => (text || "").replace(/\s+/g, " ").trim();
 const truncateTimelineText = (text, maxLength = 110) =>
   text.length <= maxLength ? text : `${text.slice(0, maxLength)}...`;
@@ -196,6 +233,14 @@ const assignTimelinePositions = (items) => {
 const buildTimelineSignature = (items) =>
   items.map((item) => `${item.key}:${Math.round(item.position * 1000)}`).join("|");
 
+const buildTimelineSourceSignature = (nodes) =>
+  nodes.map((node, index) => getTimelineMessageKey(node, index)).join("|");
+
+const isSameTimelineSource = (nodes, signature) =>
+  timelineState.sourceSignature === signature &&
+  timelineState.sourceNodes.length === nodes.length &&
+  nodes.every((node, index) => node === timelineState.sourceNodes[index]);
+
 const calculateTimelineContentHeight = (trackHeight, itemCount) => {
   const safeTrackHeight = Math.max(1, Math.round(trackHeight));
   if (itemCount <= TIMELINE_VISIBLE_NODE_CAPACITY) {
@@ -333,7 +378,9 @@ const showTimelinePreview = (index) => {
   }
 
   timelineState.hoverIndex = index;
-  preview.textContent = truncateTimelineText(item.previewText || "");
+  preview.textContent = truncateTimelineText(
+    item.previewText || t("timeline.previewFallback", { index: item.order || index + 1 })
+  );
   updateTimelineBubblePlacement();
   preview.classList.add("is-visible");
 };
@@ -404,8 +451,7 @@ const setTimelineActiveIndex = (index, options = {}) => {
   }
 };
 
-const getTimelineItemsFromMessages = () => {
-  const userNodes = getMessageNodes().filter((node) => detectRole(node) === "user");
+const buildTimelineItemsFromSourceNodes = (userNodes) => {
   const withTimestamps = [];
   let previousTimestamp = null;
 
@@ -418,7 +464,7 @@ const getTimelineItemsFromMessages = () => {
       node,
       timestamp,
       order: index + 1,
-      previewText: previewText || t("timeline.previewFallback", { index: index + 1 }),
+      previewText,
     });
   });
 
@@ -430,6 +476,53 @@ const getTimelineItemsFromMessages = () => {
     items: assignTimelinePositions(limitedItems),
     totalUserCount: withTimestamps.length,
   };
+};
+
+const syncTimelineNodeButtons = (content, items, contentHeight) => {
+  if (!(content instanceof HTMLElement)) {
+    return;
+  }
+
+  const existingButtons = Array.from(content.querySelectorAll(".chatgpt-toolkit-timeline-node"));
+  const existingByKey = new Map();
+  existingButtons.forEach((button) => {
+    if (button instanceof HTMLButtonElement) {
+      const key = button.dataset.timelineKey || "";
+      if (key) {
+        existingByKey.set(key, button);
+      }
+    }
+  });
+
+  const fragment = document.createDocumentFragment();
+  const verticalPadding = 10;
+  const usableHeight = Math.max(1, contentHeight - verticalPadding * 2);
+
+  items.forEach((item, index) => {
+    let nodeButton = existingByKey.get(item.key);
+    if (!(nodeButton instanceof HTMLButtonElement)) {
+      nodeButton = document.createElement("button");
+      nodeButton.type = "button";
+      nodeButton.className = "chatgpt-toolkit-timeline-node";
+      nodeButton.innerHTML = `<span class="chatgpt-toolkit-timeline-dot"></span>`;
+    }
+
+    existingByKey.delete(item.key);
+    nodeButton.dataset.timelineIndex = String(index);
+    nodeButton.dataset.timelineKey = item.key;
+    nodeButton.setAttribute("aria-label", t("timeline.jumpAria", { index: item.order || index + 1 }));
+
+    const topPx = verticalPadding + item.position * usableHeight;
+    const nextTop = `${topPx.toFixed(2)}px`;
+    if (nodeButton.style.top !== nextTop) {
+      nodeButton.style.top = nextTop;
+    }
+
+    fragment.appendChild(nodeButton);
+  });
+
+  existingByKey.forEach((button) => button.remove());
+  content.replaceChildren(fragment);
 };
 
 const syncTimelineActiveFromViewport = () => {
@@ -1031,8 +1124,6 @@ const renderTimeline = () => {
     return;
   }
 
-  updateTimelineBubblePlacement();
-
   const elements = getTimelineElements();
   const track = elements?.track;
   const content = elements?.content || ensureTimelineTrackContent(track);
@@ -1049,36 +1140,26 @@ const renderTimeline = () => {
   const previousItems = timelineState.items;
   const previousActiveKey = previousItems[timelineState.activeIndex]?.key || null;
   const previousHoverKey = previousItems[timelineState.hoverIndex]?.key || null;
+  const sourceNodes = getTimelineSourceNodes();
+  const sourceSignature = buildTimelineSourceSignature(sourceNodes);
+  const sourceStable = timelineState.rendered && isSameTimelineSource(sourceNodes, sourceSignature);
 
-  const timelineData = getTimelineItemsFromMessages();
-  const nextItems = timelineData.items;
-  const totalUserCount = timelineData.totalUserCount;
-  const nextSignature = buildTimelineSignature(nextItems);
+  const timelineData = sourceStable
+    ? null
+    : buildTimelineItemsFromSourceNodes(sourceNodes);
+  const nextItems = sourceStable ? timelineState.items : timelineData.items;
+  const totalUserCount = sourceStable ? sourceNodes.length : timelineData.totalUserCount;
+  const nextSignature = sourceStable ? timelineState.signature : buildTimelineSignature(nextItems);
   const contentHeight = calculateTimelineContentHeight(track.clientHeight, nextItems.length);
   content.style.height = `${contentHeight}px`;
   const shouldRebuild =
     !timelineState.rendered ||
+    !sourceStable ||
     timelineState.signature !== nextSignature ||
     timelineState.contentHeight !== contentHeight;
 
   if (shouldRebuild) {
-    content.innerHTML = "";
-
-    const fragment = document.createDocumentFragment();
-    const verticalPadding = 10;
-    const usableHeight = Math.max(1, contentHeight - verticalPadding * 2);
-    nextItems.forEach((item, index) => {
-      const nodeButton = document.createElement("button");
-      nodeButton.type = "button";
-      nodeButton.className = "chatgpt-toolkit-timeline-node";
-      nodeButton.dataset.timelineIndex = String(index);
-      nodeButton.setAttribute("aria-label", t("timeline.jumpAria", { index: item.order || index + 1 }));
-      const topPx = verticalPadding + item.position * usableHeight;
-      nodeButton.style.top = `${topPx.toFixed(2)}px`;
-      nodeButton.innerHTML = `<span class="chatgpt-toolkit-timeline-dot"></span>`;
-      fragment.appendChild(nodeButton);
-    });
-    content.appendChild(fragment);
+    syncTimelineNodeButtons(content, nextItems, contentHeight);
 
     const nextMaxScroll = Math.max(0, contentHeight - track.clientHeight);
     if (nextMaxScroll > 0) {
@@ -1094,6 +1175,8 @@ const renderTimeline = () => {
   }
 
   timelineState.items = nextItems;
+  timelineState.sourceNodes = sourceNodes;
+  timelineState.sourceSignature = sourceSignature;
   timelineState.totalUserCount = totalUserCount;
   timelineState.signature = nextSignature;
   timelineState.contentHeight = contentHeight;
