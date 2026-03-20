@@ -1702,6 +1702,121 @@ const getFolderSortPlacement = (clientX, clientY) => {
   };
 };
 
+const applyFolderNodeOrder = (node, order) => {
+  if (!(node instanceof HTMLElement)) {
+    return;
+  }
+
+  const nextOrder = String(order);
+  if (node.style.order !== nextOrder) {
+    node.style.order = nextOrder;
+  }
+};
+
+const syncConversationItemPresentation = (item, plan) => {
+  if (!(item instanceof HTMLElement) || !plan) {
+    return;
+  }
+
+  applyFolderNodeOrder(item, plan.order);
+
+  const currentFolderId = item.getAttribute(FOLDER_ITEM_ATTR) || "";
+  if (plan.folderId) {
+    if (currentFolderId !== plan.folderId) {
+      item.setAttribute(FOLDER_ITEM_ATTR, plan.folderId);
+    }
+  } else if (currentFolderId) {
+    item.removeAttribute(FOLDER_ITEM_ATTR);
+  }
+
+  const isCollapsed = item.hasAttribute(FOLDER_COLLAPSED_ATTR);
+  if (plan.collapsed) {
+    if (!isCollapsed) {
+      item.setAttribute(FOLDER_COLLAPSED_ATTR, "1");
+    }
+  } else if (isCollapsed) {
+    item.removeAttribute(FOLDER_COLLAPSED_ATTR);
+  }
+};
+
+const syncFolderHeaderPresentation = (header, plan) => {
+  if (!(header instanceof HTMLElement) || !plan?.folder) {
+    return;
+  }
+
+  const { folder, headerOrder, itemCount } = plan;
+  if (header.dataset.folderId !== folder.id) {
+    header.dataset.folderId = folder.id;
+  }
+  if (header.getAttribute(FOLDER_DROPZONE_ATTR) !== "folder") {
+    header.setAttribute(FOLDER_DROPZONE_ATTR, "folder");
+  }
+  const collapsedValue = folder.collapsed ? "1" : "0";
+  if (header.dataset.collapsed !== collapsedValue) {
+    header.dataset.collapsed = collapsedValue;
+  }
+  if (header.getAttribute("draggable") !== "true") {
+    header.setAttribute("draggable", "true");
+  }
+  applyFolderNodeOrder(header, headerOrder);
+
+  const folderName = header.querySelector(".chatgpt-toolkit-folder-name");
+  if (folderName instanceof HTMLElement && folderName.textContent !== folder.name) {
+    folderName.textContent = folder.name;
+  }
+
+  const countText = String(itemCount);
+  const countNode = header.querySelector(".chatgpt-toolkit-folder-count");
+  if (countNode instanceof HTMLElement && countNode.textContent !== countText) {
+    countNode.textContent = countText;
+  }
+
+  const menuButton = header.querySelector("[data-folder-action='open-menu']");
+  if (menuButton instanceof HTMLElement) {
+    if (menuButton.dataset.folderId !== folder.id) {
+      menuButton.dataset.folderId = folder.id;
+    }
+    if (menuButton.getAttribute("draggable") !== "false") {
+      menuButton.setAttribute("draggable", "false");
+    }
+  }
+};
+
+const syncFolderEmptyStatePresentation = (emptyState, folderId, order) => {
+  if (!(emptyState instanceof HTMLElement) || !folderId) {
+    return;
+  }
+
+  if (emptyState.dataset.folderId !== folderId) {
+    emptyState.dataset.folderId = folderId;
+  }
+  if (emptyState.getAttribute(FOLDER_DROPZONE_ATTR) !== "folder") {
+    emptyState.setAttribute(FOLDER_DROPZONE_ATTR, "folder");
+  }
+  if (emptyState.textContent !== t("folder.emptyHint")) {
+    emptyState.textContent = t("folder.emptyHint");
+  }
+  applyFolderNodeOrder(emptyState, order);
+};
+
+const syncUngroupedButtonPresentation = (manager, ungroupedCount) => {
+  if (!(manager instanceof HTMLElement)) {
+    return;
+  }
+
+  const ungroupedButton = manager.querySelector('[data-folder-action="show-ungrouped"]');
+  if (!(ungroupedButton instanceof HTMLButtonElement)) {
+    return;
+  }
+
+  ungroupedButton.classList.toggle("is-empty", ungroupedCount === 0);
+  const countNode = ungroupedButton.querySelector(".chatgpt-toolkit-folder-pill-count");
+  const countText = String(ungroupedCount);
+  if (countNode instanceof HTMLElement && countNode.textContent !== countText) {
+    countNode.textContent = countText;
+  }
+};
+
 const renderFolders = () => {
   hydrateFolders();
 
@@ -1725,21 +1840,17 @@ const renderFolders = () => {
   ensureFolderMenu();
 
   const conversationItems = getConversationItems(history);
+  const conversationItemSet = new Set(conversationItems);
   const sortedFolders = getSortedFolders();
   const validFolderIds = new Set(sortedFolders.map((folder) => folder.id));
   const groupedItems = new Map();
   const ungroupedItems = [];
 
   conversationItems.forEach((item) => {
-    item.style.order = "";
-    item.removeAttribute(FOLDER_ITEM_ATTR);
-    item.removeAttribute(FOLDER_COLLAPSED_ATTR);
-
     const conversationId = getConversationIdFromItem(item);
     const folderId = conversationId ? folderState.assignments[conversationId] : "";
 
     if (conversationId && folderId && validFolderIds.has(folderId)) {
-      item.setAttribute(FOLDER_ITEM_ATTR, folderId);
       if (!groupedItems.has(folderId)) {
         groupedItems.set(folderId, []);
       }
@@ -1759,12 +1870,57 @@ const renderFolders = () => {
       child instanceof HTMLElement &&
       !child.classList.contains(FOLDER_HEADER_CLASS) &&
       !child.classList.contains(FOLDER_EMPTY_CLASS) &&
-      !conversationItems.includes(child),
+      !conversationItemSet.has(child),
   );
 
+  const conversationPlans = new Map();
+  const otherNativePlans = new Map();
+  const folderPlans = [];
+  let nextOrder = 0;
+
+  sortedFolders.forEach((folder) => {
+    const folderItems = groupedItems.get(folder.id) || [];
+    const itemCount = folderItems.length;
+    const emptyVisible = !folder.collapsed && itemCount === 0;
+    const headerOrder = nextOrder++;
+    const emptyOrder = emptyVisible ? nextOrder++ : -1;
+
+    folderPlans.push({
+      folder,
+      itemCount,
+      headerOrder,
+      emptyVisible,
+      emptyOrder,
+    });
+
+    folderItems.forEach((item) => {
+      conversationPlans.set(item, {
+        order: nextOrder++,
+        folderId: folder.id,
+        collapsed: folder.collapsed,
+      });
+    });
+  });
+
+  ungroupedItems.forEach((item) => {
+    conversationPlans.set(item, {
+      order: nextOrder++,
+      folderId: "",
+      collapsed: false,
+    });
+  });
+
+  otherNativeChildren.forEach((child) => {
+    otherNativePlans.set(child, nextOrder++);
+  });
+
   withFolderRenderLock(() => {
-    history.setAttribute(FOLDER_ROOT_ATTR, "1");
-    history.setAttribute(FOLDER_THEME_TARGET_ATTR, "folders");
+    if (history.getAttribute(FOLDER_ROOT_ATTR) !== "1") {
+      history.setAttribute(FOLDER_ROOT_ATTR, "1");
+    }
+    if (history.getAttribute(FOLDER_THEME_TARGET_ATTR) !== "folders") {
+      history.setAttribute(FOLDER_THEME_TARGET_ATTR, "folders");
+    }
 
     const currentHeaders = new Map();
     const currentEmptyStates = new Map();
@@ -1782,9 +1938,8 @@ const renderFolders = () => {
       }
     });
 
-    let nextOrder = 0;
-
-    sortedFolders.forEach((folder) => {
+    folderPlans.forEach((plan) => {
+      const { folder, emptyVisible, emptyOrder } = plan;
       let header = currentHeaders.get(folder.id);
       if (!(header instanceof HTMLElement)) {
         header = document.createElement("div");
@@ -1802,29 +1957,9 @@ const renderFolders = () => {
       }
 
       currentHeaders.delete(folder.id);
-      header.dataset.folderId = folder.id;
-      header.dataset.collapsed = folder.collapsed ? "1" : "0";
-      header.setAttribute("draggable", "true");
-      header.style.order = String(nextOrder++);
+      syncFolderHeaderPresentation(header, plan);
 
-      const folderName = header.querySelector(".chatgpt-toolkit-folder-name");
-      if (folderName) {
-        folderName.textContent = folder.name;
-      }
-
-      const countNode = header.querySelector(".chatgpt-toolkit-folder-count");
-      if (countNode) {
-        countNode.textContent = String((groupedItems.get(folder.id) || []).length);
-      }
-
-      const menuButton = header.querySelector("[data-folder-action='open-menu']");
-      if (menuButton instanceof HTMLElement) {
-        menuButton.dataset.folderId = folder.id;
-        menuButton.setAttribute("draggable", "false");
-      }
-
-      const folderItems = groupedItems.get(folder.id) || [];
-      if (!folder.collapsed && folderItems.length === 0) {
+      if (emptyVisible) {
         let emptyState = currentEmptyStates.get(folder.id);
         if (!(emptyState instanceof HTMLElement)) {
           emptyState = document.createElement("div");
@@ -1835,8 +1970,7 @@ const renderFolders = () => {
         }
 
         currentEmptyStates.delete(folder.id);
-        emptyState.dataset.folderId = folder.id;
-        emptyState.style.order = String(nextOrder++);
+        syncFolderEmptyStatePresentation(emptyState, folder.id, emptyOrder);
       } else {
         const emptyState = currentEmptyStates.get(folder.id);
         if (emptyState instanceof HTMLElement) {
@@ -1844,34 +1978,25 @@ const renderFolders = () => {
         }
         currentEmptyStates.delete(folder.id);
       }
-
-      folderItems.forEach((item) => {
-        item.style.order = String(nextOrder++);
-        if (folder.collapsed) {
-          item.setAttribute(FOLDER_COLLAPSED_ATTR, "1");
-        }
-      });
     });
 
-    ungroupedItems.forEach((item) => {
-      item.style.order = String(nextOrder++);
+    conversationItems.forEach((item) => {
+      const plan = conversationPlans.get(item) || {
+        order: 0,
+        folderId: "",
+        collapsed: false,
+      };
+      syncConversationItemPresentation(item, plan);
     });
 
     otherNativeChildren.forEach((child) => {
-      child.style.order = String(nextOrder++);
+      applyFolderNodeOrder(child, otherNativePlans.get(child) ?? 0);
     });
 
     currentHeaders.forEach((node) => node.remove());
     currentEmptyStates.forEach((node) => node.remove());
 
-    const ungroupedButton = manager.querySelector('[data-folder-action="show-ungrouped"]');
-    if (ungroupedButton instanceof HTMLButtonElement) {
-      ungroupedButton.classList.toggle("is-empty", ungroupedItems.length === 0);
-      const countNode = ungroupedButton.querySelector(".chatgpt-toolkit-folder-pill-count");
-      if (countNode) {
-        countNode.textContent = String(ungroupedItems.length);
-      }
-    }
+    syncUngroupedButtonPresentation(manager, ungroupedItems.length);
   });
 
   if (folderState.menuFolderId && !getFolderById(folderState.menuFolderId)) {
