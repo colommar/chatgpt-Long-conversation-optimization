@@ -527,6 +527,43 @@ const syncTimelineNodeButtons = (content, items, contentHeight) => {
   content.replaceChildren(fragment);
 };
 
+const getTimelineViewportMetrics = () => {
+  const fallbackTop = 0;
+  const fallbackBottom = Math.max(0, window.innerHeight);
+  const fallbackCenter = (fallbackTop + fallbackBottom) / 2;
+  const scrollRoot = resolveTimelineScrollRoot();
+
+  if (!(scrollRoot instanceof HTMLElement)) {
+    return {
+      top: fallbackTop,
+      bottom: fallbackBottom,
+      center: fallbackCenter,
+    };
+  }
+
+  const rootRect = scrollRoot.getBoundingClientRect();
+  const top = clampTimelineValue(rootRect.top, fallbackTop, fallbackBottom);
+  const bottom = clampTimelineValue(rootRect.bottom, fallbackTop, fallbackBottom);
+  const height = bottom - top;
+
+  if (!(height > 32)) {
+    return {
+      top: fallbackTop,
+      bottom: fallbackBottom,
+      center: fallbackCenter,
+    };
+  }
+
+  return {
+    top,
+    bottom,
+    center: top + height / 2,
+  };
+};
+
+const isTimelineNodeNearViewport = (rect, viewport) =>
+  rect.bottom > viewport.top && rect.top < viewport.bottom;
+
 const syncTimelineActiveFromViewport = () => {
   if (isTimelineInteractionLocked()) {
     return true;
@@ -535,9 +572,11 @@ const syncTimelineActiveFromViewport = () => {
     return false;
   }
 
-  const centerY = window.innerHeight / 2;
-  let nearestIndex = -1;
-  let nearestDistance = Number.POSITIVE_INFINITY;
+  const viewport = getTimelineViewportMetrics();
+  let nearestVisibleIndex = -1;
+  let nearestVisibleDistance = Number.POSITIVE_INFINITY;
+  let nearestFallbackIndex = -1;
+  let nearestFallbackDistance = Number.POSITIVE_INFINITY;
 
   timelineState.items.forEach((item, index) => {
     const node = item.node;
@@ -545,18 +584,31 @@ const syncTimelineActiveFromViewport = () => {
       return;
     }
     const rect = node.getBoundingClientRect();
+    if (!(rect.height > 0)) {
+      return;
+    }
     const nodeCenter = rect.top + rect.height / 2;
-    const distance = Math.abs(nodeCenter - centerY);
-    if (distance < nearestDistance) {
-      nearestDistance = distance;
-      nearestIndex = index;
+    const distance = Math.abs(nodeCenter - viewport.center);
+
+    if (isTimelineNodeNearViewport(rect, viewport)) {
+      if (distance < nearestVisibleDistance) {
+        nearestVisibleDistance = distance;
+        nearestVisibleIndex = index;
+      }
+      return;
+    }
+
+    if (distance < nearestFallbackDistance) {
+      nearestFallbackDistance = distance;
+      nearestFallbackIndex = index;
     }
   });
 
-  if (nearestIndex >= 0 && nearestIndex !== timelineState.activeIndex) {
-    setTimelineActiveIndex(nearestIndex);
+  const nextIndex = nearestVisibleIndex >= 0 ? nearestVisibleIndex : nearestFallbackIndex;
+  if (nextIndex >= 0 && nextIndex !== timelineState.activeIndex) {
+    setTimelineActiveIndex(nextIndex);
   }
-  return nearestIndex >= 0;
+  return nextIndex >= 0;
 };
 
 const onTimelineWindowScroll = () => {
@@ -581,13 +633,33 @@ const resolveTimelineScrollRoot = () => {
   if (explicitRoot instanceof HTMLElement) {
     return explicitRoot;
   }
+
   const main = document.querySelector("main");
   if (main instanceof HTMLElement) {
     const mainRoot = main.closest("[data-scroll-root]");
     if (mainRoot instanceof HTMLElement) {
       return mainRoot;
     }
+
+    let current = main.parentElement;
+    while (current instanceof HTMLElement && current !== document.body) {
+      const style = window.getComputedStyle(current);
+      const overflowY = style?.overflowY || "";
+      const hasScrollableOverflow =
+        overflowY === "auto" ||
+        overflowY === "scroll" ||
+        overflowY === "overlay";
+      if (hasScrollableOverflow && current.scrollHeight > current.clientHeight + 24) {
+        return current;
+      }
+      current = current.parentElement;
+    }
   }
+
+  if (document.scrollingElement instanceof HTMLElement) {
+    return document.scrollingElement;
+  }
+
   return null;
 };
 
