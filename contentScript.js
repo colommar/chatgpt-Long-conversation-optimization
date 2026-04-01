@@ -244,8 +244,58 @@ if (!window[TOOLKIT_BOOTSTRAP_FLAG]) {
     });
   };
 
+  const getSidebarMutationElements = (mutation) => {
+    const elements = [];
+    const targetElement = getObservedElement(mutation?.target);
+    if (targetElement instanceof Element) {
+      elements.push(targetElement);
+    }
+
+    mutation?.addedNodes?.forEach((node) => {
+      const element = getObservedElement(node);
+      if (element instanceof Element) {
+        elements.push(element);
+      }
+    });
+
+    mutation?.removedNodes?.forEach((node) => {
+      const element = getObservedElement(node);
+      if (element instanceof Element) {
+        elements.push(element);
+      }
+    });
+
+    return elements;
+  };
+
+  const hasConversationNodeSignature = (element) =>
+    Boolean(
+      element.matches?.('a[data-sidebar-item="true"][href*="/c/"]') ||
+      element.querySelector?.('a[data-sidebar-item="true"][href*="/c/"]') ||
+      element.matches?.("[data-conversation-options-trigger]") ||
+      element.querySelector?.("[data-conversation-options-trigger]"),
+    );
+
+  const hasChatSectionSignature = (element) =>
+    Boolean(
+      element.id === "history" ||
+      element.closest?.("#history") ||
+      element.matches?.(".group\\/sidebar-expando-section") ||
+      element.closest?.(".group\\/sidebar-expando-section") ||
+      element.matches?.("h2.__menu-label") ||
+      element.querySelector?.("h2.__menu-label"),
+    );
+
+  const mutationTouchesFolderSidebarArea = (mutation) =>
+    getSidebarMutationElements(mutation).some(
+      (element) => hasConversationNodeSignature(element) || hasChatSectionSignature(element),
+    );
+
   const handleSidebarMutations = (mutations) => {
     if (window.__toolkitIsRendering || !hasRelevantNonToolkitMutation(mutations)) {
+      return;
+    }
+    if (!mutations.some((mutation) => mutationTouchesFolderSidebarArea(mutation))) {
       return;
     }
     markObserverWork({
