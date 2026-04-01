@@ -1577,6 +1577,41 @@ const moveConversationToFolderPosition = (conversationId, folderId, options = {}
   scheduleSettledFolderRefresh();
 };
 
+const createConversationPlanSignature = (plan) => {
+  if (!plan || typeof plan !== "object") {
+    return "";
+  }
+
+  return `${plan.order}|${plan.folderId || ""}|${plan.collapsed ? 1 : 0}`;
+};
+
+const createFolderPlanSignature = (plan) => {
+  if (!plan?.folder) {
+    return "";
+  }
+
+  const { folder, itemCount, headerOrder, emptyVisible, emptyOrder } = plan;
+  return `${folder.id}|${folder.name}|${folder.collapsed ? 1 : 0}|${itemCount}|${headerOrder}|${emptyVisible ? 1 : 0}|${emptyOrder}`;
+};
+
+const clearConversationPresentationNode = (node) => {
+  if (!(node instanceof HTMLElement)) {
+    return;
+  }
+
+  node.style.order = "";
+  node.removeAttribute(FOLDER_ITEM_ATTR);
+  node.removeAttribute(FOLDER_COLLAPSED_ATTR);
+  node.removeAttribute(FOLDER_HIGHLIGHT_ATTR);
+};
+
+const resetFolderRenderCache = () => {
+  folderState.previousNativeList = null;
+  folderState.conversationRenderCache = new Map();
+  folderState.folderRenderCache = new Map();
+  folderState.otherNativeOrderCache = new Map();
+};
+
 const clearHistoryPresentation = (history) => {
   if (!(history instanceof HTMLElement)) {
     return;
@@ -1587,6 +1622,7 @@ const clearHistoryPresentation = (history) => {
   history.removeAttribute(FOLDER_THEME_TARGET_ATTR);
   history.removeAttribute(THEME_ATTR);
   nativeList?.removeAttribute(FOLDER_NATIVE_LIST_ATTR);
+  folderState.previousNativeList?.removeAttribute(FOLDER_NATIVE_LIST_ATTR);
 
   Array.from(history.children).forEach((child) => {
     if (!(child instanceof HTMLElement)) {
@@ -1598,28 +1634,21 @@ const clearHistoryPresentation = (history) => {
       return;
     }
 
-    child.style.order = "";
-    child.removeAttribute(FOLDER_ITEM_ATTR);
-    child.removeAttribute(FOLDER_COLLAPSED_ATTR);
-    child.removeAttribute(FOLDER_HIGHLIGHT_ATTR);
+    clearConversationPresentationNode(child);
   });
 
   getConversationItems(history).forEach((item) => {
     const presentationNode = getConversationPresentationNode(item, history);
-    item.style.order = "";
-    item.removeAttribute(FOLDER_ITEM_ATTR);
-    item.removeAttribute(FOLDER_COLLAPSED_ATTR);
-    item.removeAttribute(FOLDER_HIGHLIGHT_ATTR);
+    clearConversationPresentationNode(item);
 
     if (!(presentationNode instanceof HTMLElement) || presentationNode === item) {
       return;
     }
 
-    presentationNode.style.order = "";
-    presentationNode.removeAttribute(FOLDER_ITEM_ATTR);
-    presentationNode.removeAttribute(FOLDER_COLLAPSED_ATTR);
-    presentationNode.removeAttribute(FOLDER_HIGHLIGHT_ATTR);
+    clearConversationPresentationNode(presentationNode);
   });
+
+  resetFolderRenderCache();
 };
 
 const cleanupFolderUi = () => {
@@ -1642,6 +1671,7 @@ const cleanupFolderUi = () => {
   folderState.menuFolderId = null;
   folderState.currentDropZoneKey = "";
   folderState.missingHistoryRetryCount = 0;
+  resetFolderRenderCache();
 };
 
 const clearFolderMissingSectionRetry = (options = {}) => {
@@ -2153,6 +2183,7 @@ const renderFolders = () => {
 
     folderState.history = null;
     folderState.nativeList = null;
+    resetFolderRenderCache();
     folderState.currentDropZoneKey = "";
     folderState.dragLayout = null;
     syncUngroupedButtonPresentation(manager, 0);
@@ -2264,20 +2295,30 @@ const renderFolders = () => {
     if (history.getAttribute(FOLDER_THEME_TARGET_ATTR) !== "folders") {
       history.setAttribute(FOLDER_THEME_TARGET_ATTR, "folders");
     }
-    Array.from(history.children).forEach((child) => {
-      if (!(child instanceof HTMLElement) || child === folderState.nativeList) {
-        return;
-      }
-      child.removeAttribute(FOLDER_NATIVE_LIST_ATTR);
-    });
+    if (
+      folderState.previousNativeList instanceof HTMLElement &&
+      folderState.previousNativeList !== folderState.nativeList
+    ) {
+      folderState.previousNativeList.removeAttribute(FOLDER_NATIVE_LIST_ATTR);
+    }
     if (folderState.nativeList instanceof HTMLElement) {
       if (folderState.nativeList.getAttribute(FOLDER_NATIVE_LIST_ATTR) !== "1") {
         folderState.nativeList.setAttribute(FOLDER_NATIVE_LIST_ATTR, "1");
       }
     }
+    folderState.previousNativeList = folderState.nativeList instanceof HTMLElement ? folderState.nativeList : null;
 
     const currentHeaders = new Map();
     const currentEmptyStates = new Map();
+    const previousFolderRenderCache =
+      folderState.folderRenderCache instanceof Map ? folderState.folderRenderCache : new Map();
+    const nextFolderRenderCache = new Map();
+    const previousConversationRenderCache =
+      folderState.conversationRenderCache instanceof Map ? folderState.conversationRenderCache : new Map();
+    const nextConversationRenderCache = new Map();
+    const previousOtherNativeOrderCache =
+      folderState.otherNativeOrderCache instanceof Map ? folderState.otherNativeOrderCache : new Map();
+    const nextOtherNativeOrderCache = new Map();
 
     Array.from(history.children).forEach((child) => {
       if (!(child instanceof HTMLElement)) {
@@ -2311,7 +2352,15 @@ const renderFolders = () => {
       }
 
       currentHeaders.delete(folder.id);
-      syncFolderHeaderPresentation(header, plan);
+      const folderSignature = createFolderPlanSignature(plan);
+      const previousRender = previousFolderRenderCache.get(folder.id);
+      const shouldSyncHeader =
+        !(previousRender?.header instanceof HTMLElement) ||
+        previousRender.header !== header ||
+        previousRender.signature !== folderSignature;
+      if (shouldSyncHeader) {
+        syncFolderHeaderPresentation(header, plan);
+      }
 
       if (emptyVisible) {
         let emptyState = currentEmptyStates.get(folder.id);
@@ -2324,13 +2373,32 @@ const renderFolders = () => {
         }
 
         currentEmptyStates.delete(folder.id);
-        syncFolderEmptyStatePresentation(emptyState, folder.id, emptyOrder);
+        const emptySignature = `${folder.id}|${emptyOrder}`;
+        const shouldSyncEmpty =
+          !(previousRender?.emptyState instanceof HTMLElement) ||
+          previousRender.emptyState !== emptyState ||
+          previousRender.emptySignature !== emptySignature;
+        if (shouldSyncEmpty) {
+          syncFolderEmptyStatePresentation(emptyState, folder.id, emptyOrder);
+        }
+        nextFolderRenderCache.set(folder.id, {
+          signature: folderSignature,
+          header,
+          emptyState,
+          emptySignature,
+        });
       } else {
         const emptyState = currentEmptyStates.get(folder.id);
         if (emptyState instanceof HTMLElement) {
           emptyState.remove();
         }
         currentEmptyStates.delete(folder.id);
+        nextFolderRenderCache.set(folder.id, {
+          signature: folderSignature,
+          header,
+          emptyState: null,
+          emptySignature: "",
+        });
       }
     });
 
@@ -2340,15 +2408,75 @@ const renderFolders = () => {
         folderId: "",
         collapsed: false,
       };
-      syncConversationItemPresentation(item, plan);
+      const conversationId = getConversationIdFromItem(item);
+      const presentationNode = getConversationPresentationNode(item, history) || item;
+      const signature = createConversationPlanSignature(plan);
+      const previousRender = conversationId ? previousConversationRenderCache.get(conversationId) : null;
+      const shouldSync =
+        !conversationId ||
+        !(previousRender?.node instanceof HTMLElement) ||
+        previousRender.node !== presentationNode ||
+        previousRender.signature !== signature;
+
+      if (shouldSync) {
+        syncConversationItemPresentation(item, plan);
+      }
+
+      if (!conversationId) {
+        return;
+      }
+
+      if (
+        previousRender?.node instanceof HTMLElement &&
+        previousRender.node !== presentationNode &&
+        previousRender.node.isConnected &&
+        previousRender.node.parentElement === history
+      ) {
+        clearConversationPresentationNode(previousRender.node);
+      }
+
+      nextConversationRenderCache.set(conversationId, {
+        signature,
+        node: presentationNode,
+      });
+    });
+
+    previousConversationRenderCache.forEach((renderState, conversationId) => {
+      if (nextConversationRenderCache.has(conversationId)) {
+        return;
+      }
+      if (
+        renderState?.node instanceof HTMLElement &&
+        renderState.node.isConnected &&
+        renderState.node.parentElement === history
+      ) {
+        clearConversationPresentationNode(renderState.node);
+      }
     });
 
     otherNativeChildren.forEach((child) => {
-      applyFolderNodeOrder(child, otherNativePlans.get(child) ?? 0);
+      const nextOrder = otherNativePlans.get(child) ?? 0;
+      if (previousOtherNativeOrderCache.get(child) !== nextOrder) {
+        applyFolderNodeOrder(child, nextOrder);
+      }
+      nextOtherNativeOrderCache.set(child, nextOrder);
+    });
+
+    previousOtherNativeOrderCache.forEach((_, node) => {
+      if (!(node instanceof HTMLElement) || nextOtherNativeOrderCache.has(node)) {
+        return;
+      }
+      if (node.parentElement === history) {
+        node.style.order = "";
+      }
     });
 
     currentHeaders.forEach((node) => node.remove());
     currentEmptyStates.forEach((node) => node.remove());
+
+    folderState.folderRenderCache = nextFolderRenderCache;
+    folderState.conversationRenderCache = nextConversationRenderCache;
+    folderState.otherNativeOrderCache = nextOtherNativeOrderCache;
 
     syncUngroupedButtonPresentation(manager, ungroupedItems.length);
   });
