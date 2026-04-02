@@ -11,6 +11,13 @@ Current active maintainer: `bujue3709` (primary / sole active maintainer)
 - `https://chat.openai.com/*`
 - `https://chatgpt.com/*`
 
+## Browser Support
+
+- ✅ `Microsoft Edge` (officially supported)
+- ✅ `Google Chrome` (officially supported)
+- ⚠️ `Firefox` (temporary loading works; full support hardening is planned)
+- ⚠️ `Safari (macOS)` (under evaluation)
+
 ## Feature Highlights
 
 - Long conversation cleanup: hide older messages, keep only the latest part visible, remember auto-optimization per conversation, and re-optimize automatically as the visible message count grows.

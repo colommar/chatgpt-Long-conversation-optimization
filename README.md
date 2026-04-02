@@ -11,6 +11,13 @@
 - `https://chat.openai.com/*` 💬
 - `https://chatgpt.com/*` 🤖
 
+浏览器支持（当前） 🧭
+
+- ✅ `Microsoft Edge`（正式支持）
+- ✅ `Google Chrome`（正式支持）
+- ⚠️ `Firefox`（可临时加载，后续做正式适配）
+- ⚠️ `Safari (macOS)`（评估中）
+
 ## 功能概览 ✨
 
 - 🧹 长会话折叠：隐藏较早消息，仅保留最近一段对话；支持按会话记住自动优化状态，并在消息继续增长时自动再次收口。
