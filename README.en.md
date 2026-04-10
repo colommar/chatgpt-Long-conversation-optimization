@@ -24,6 +24,7 @@ Current active maintainer: `bujue3709` (primary / sole active maintainer)
 - Full JSON export: export the current conversation even if older messages were previously collapsed.
 - In-page search: search within the current conversation, highlight matches, and jump between results.
 - Prompt library: add, delete, search, categorize, sort, import JSON, export JSON, and copy prompts with one click.
+- Settings panel: tweak core preferences locally via a native-style modal, supporting real-time variable tuning and auto-persistence.
 - LaTeX formula copy: hover rendered formulas and copy LaTeX source in one click.
 - Timeline navigation: generate timeline nodes from loaded user messages, preview them, jump to them, and move the timeline panel around.
 - Conversation folders: manage chat folders above the native “Your chats” list without replacing native conversation nodes.
@@ -71,6 +72,7 @@ Available actions:
 - Open the prompt library
 - Show or hide the timeline
 - Search messages
+- Settings panel
 - Change language
 
 When collapsed, the toolbar becomes a floating button. The button can be dragged and snaps to the nearest edge when released.
@@ -165,6 +167,18 @@ The toolbar footer also includes two lightweight links:
 - You can drag folder headers to reorder folders.
 - Folder management only adds local classification and ordering in the sidebar. It does not replace native conversation nodes, so native rename, archive, and other built-in conversation actions remain available.
 - Folder structure, assignments, collapse state, and order are persisted locally and restored after refresh.
+
+### Settings Panel
+
+- Accessed from the toolbar, it provides a native-style sliding modal for extension settings.
+- Allows you to seamlessly tweak the following parameters:
+  - Number of latest messages to keep
+  - Auto-optimization buffer scale
+  - Timeline visible node capacity
+  - Timeline max sampled nodes
+  - Collapse memory retention days
+- After clicking "Save", changes apply immediately without a page refresh and automatically persist to local storage.
+- The modal natively adapts to the ChatGPT light/dark theme dynamically.
 
 ## Support
 

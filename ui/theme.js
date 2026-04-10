@@ -68,6 +68,7 @@ const applyToolkitTheme = (theme) => {
     document.getElementById(TIMELINE_ID),
     document.getElementById(LATEX_COPY_ID),
     document.getElementById(PROMPT_MODAL_ID),
+    document.getElementById("chatgpt-toolkit-settings-modal"),
     document.getElementById(FOLDER_MANAGER_ID),
     document.getElementById(FOLDER_MENU_ID),
     document.querySelector(`[${FOLDER_ROOT_ATTR}="1"]`),

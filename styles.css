@@ -2131,3 +2131,35 @@ html[data-toolkit-folder-sorting="1"] .chatgpt-toolkit-folder-header[draggable="
     scroll-behavior: auto !important;
   }
 }
+/* Settings Form Elements */
+.chatgpt-toolkit-form-group {
+  margin-bottom: 16px;
+}
+.chatgpt-toolkit-form-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--prompt-text);
+}
+.chatgpt-toolkit-input {
+  width: 100%;
+  border-radius: 8px;
+  background-color: var(--prompt-input-bg);
+  border: 1px solid var(--prompt-input-border);
+  color: var(--prompt-text);
+  font-size: 14px;
+  padding: 8px 12px;
+  box-sizing: border-box;
+  transition: border-color var(--toolkit-transition-fast);
+}
+.chatgpt-toolkit-input:focus {
+  border-color: var(--prompt-primary);
+  outline: none;
+}
+.chatgpt-toolkit-form-desc {
+  font-size: 12px;
+  color: var(--prompt-muted);
+  margin-top: 4px;
+  line-height: 1.4;
+}

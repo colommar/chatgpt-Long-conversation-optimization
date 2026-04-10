@@ -187,6 +187,11 @@ const refreshToolbarLocalization = () => {
     promptButton.textContent = t("toolbar.promptLibrary");
   }
 
+  const settingsButton = toolbar.querySelector('[data-action="settings"]');
+  if (settingsButton instanceof HTMLButtonElement) {
+    settingsButton.textContent = t("toolbar.settings");
+  }
+
   const searchInput = toolbar.querySelector("#chatgpt-toolkit-search-input");
   if (searchInput instanceof HTMLInputElement) {
     searchInput.placeholder = t("toolbar.searchPlaceholder");
@@ -281,6 +286,9 @@ const buildToolbar = () => {
       <button type="button" class="chatgpt-toolkit-button" data-action="timeline-toggle">
         ${timelineState.visible ? t("toolbar.timelineHide") : t("toolbar.timelineShow")}
       </button>
+      <button type="button" class="chatgpt-toolkit-button" data-action="settings">
+        ${t("toolbar.settings")}
+      </button>
     </div>
     <div class="chatgpt-toolkit-search">
       <div class="chatgpt-toolkit-search-row">
@@ -333,6 +341,7 @@ const buildToolbar = () => {
       export: () => exportMessages(),
       "prompt-library": () => void openPromptModal(),
       "timeline-toggle": () => toggleTimelineVisibility(),
+      settings: () => openSettingsModal(),
       "open-star-project": () => openToolkitLink(TOOLKIT_REPO_URL),
       "open-feedback": () => openToolkitLink(TOOLKIT_FEEDBACK_URL),
       search: () => {
@@ -648,5 +657,108 @@ const openToolkitLink = (url) => {
   }
   window.open(url, "_blank", "noopener,noreferrer");
 };
+
+const openSettingsModal = () => {
+  let modal = document.getElementById("chatgpt-toolkit-settings-modal");
+  if (!modal) {
+    modal = document.createElement("section");
+    modal.id = "chatgpt-toolkit-settings-modal";
+    modal.className = "chatgpt-toolkit-prompt-modal";
+    document.body.appendChild(modal);
+
+    modal.addEventListener("click", (e) => {
+      const actionTarget = e.target.closest("[data-settings-action]");
+      if (actionTarget) {
+        if (actionTarget.dataset.settingsAction === "close") {
+          modal.classList.remove("is-visible");
+        }
+      }
+    });
+
+    if (typeof detectChatGPTTheme === "function" && typeof applyToolkitTheme === "function") {
+      const currentTheme = detectChatGPTTheme();
+      modal.setAttribute("data-toolkit-theme", currentTheme);
+    }
+  }
+
+  const render = () => {
+    modal.innerHTML = `
+      <div class="chatgpt-toolkit-prompt-backdrop" data-settings-action="close"></div>
+      <div class="chatgpt-toolkit-prompt-panel" role="dialog" aria-modal="true" aria-label="${t("settings.title")}" style="max-width: 480px;">
+        <div class="chatgpt-toolkit-prompt-header">
+          <strong>${t("settings.title")}</strong>
+          <button type="button" class="chatgpt-toolkit-prompt-close" data-settings-action="close">${t("settings.close")}</button>
+        </div>
+        <div class="chatgpt-toolkit-prompt-list" style="padding: 16px; padding-bottom: 24px; overflow-y: auto;">
+          
+          <div class="chatgpt-toolkit-form-group">
+            <label class="chatgpt-toolkit-form-label">${t("settings.keepLatest.label")}</label>
+            <input type="number" id="toolkit-setting-keepLatest" class="chatgpt-toolkit-input" value="${state.keepLatest || 20}" min="1" max="1000" />
+            <p class="chatgpt-toolkit-form-desc">${t("settings.keepLatest.desc")}</p>
+          </div>
+
+          <div class="chatgpt-toolkit-form-group">
+            <label class="chatgpt-toolkit-form-label">${t("settings.autoReoptimizeBuffer.label")}</label>
+            <input type="number" id="toolkit-setting-buffer" class="chatgpt-toolkit-input" value="${COLLAPSE_AUTO_REOPTIMIZE_BUFFER || 10}" min="1" max="1000" />
+            <p class="chatgpt-toolkit-form-desc">${t("settings.autoReoptimizeBuffer.desc")}</p>
+          </div>
+
+          <div class="chatgpt-toolkit-form-group">
+            <label class="chatgpt-toolkit-form-label">${t("settings.timelineVisibleNodeCapacity.label")}</label>
+            <input type="number" id="toolkit-setting-timelineCapacity" class="chatgpt-toolkit-input" value="${TIMELINE_VISIBLE_NODE_CAPACITY || 10}" min="1" max="100" />
+            <p class="chatgpt-toolkit-form-desc">${t("settings.timelineVisibleNodeCapacity.desc")}</p>
+          </div>
+
+          <div class="chatgpt-toolkit-form-group">
+            <label class="chatgpt-toolkit-form-label">${t("settings.timelineMaxNodes.label")}</label>
+            <input type="number" id="toolkit-setting-timelineMaxNodes" class="chatgpt-toolkit-input" value="${TIMELINE_MAX_NODES || 20}" min="1" max="100" />
+            <p class="chatgpt-toolkit-form-desc">${t("settings.timelineMaxNodes.desc")}</p>
+          </div>
+
+          <div class="chatgpt-toolkit-form-group">
+            <label class="chatgpt-toolkit-form-label">${t("settings.collapseMemoryRetentionDays.label")}</label>
+            <input type="number" id="toolkit-setting-retentionDays" class="chatgpt-toolkit-input" value="${Math.floor((COLLAPSE_MEMORY_RETENTION_MS || 864000000) / 86400000)}" min="1" max="365" />
+            <p class="chatgpt-toolkit-form-desc">${t("settings.collapseMemoryRetentionDays.desc")}</p>
+          </div>
+
+        </div>
+        <div class="chatgpt-toolkit-prompt-footer">
+          <span></span>
+          <div class="chatgpt-toolkit-prompt-footer-actions">
+            <button type="button" class="chatgpt-toolkit-settings-save">${t("settings.save")}</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const saveBtn = modal.querySelector(".chatgpt-toolkit-settings-save");
+    saveBtn.addEventListener("click", () => {
+      const kl = parseInt(document.getElementById("toolkit-setting-keepLatest").value, 10);
+      const buf = parseInt(document.getElementById("toolkit-setting-buffer").value, 10);
+      const tc = parseInt(document.getElementById("toolkit-setting-timelineCapacity").value, 10);
+      const tmn = parseInt(document.getElementById("toolkit-setting-timelineMaxNodes").value, 10);
+      const rd = parseInt(document.getElementById("toolkit-setting-retentionDays").value, 10);
+      
+      if (typeof saveToolkitConfig === "function") {
+        saveToolkitConfig({
+          keepLatest: kl > 0 ? kl : 20,
+          autoReoptimizeBuffer: buf > 0 ? buf : 10,
+          timelineVisibleNodeCapacity: tc > 0 ? tc : 10,
+          timelineMaxNodes: tmn > 0 ? tmn : 20,
+          collapseMemoryRetentionDays: rd > 0 ? rd : 10,
+        });
+      }
+
+      if (typeof updateStatusByKey === "function") {
+        updateStatusByKey("settings.saved", "success");
+      }
+      modal.classList.remove("is-visible");
+    });
+  };
+
+  render();
+  setTimeout(() => modal.classList.add("is-visible"), 10);
+};
+
 
 // 标志位：避免重复添加 resize 监听器
