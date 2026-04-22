@@ -5,7 +5,7 @@ const COLLAPSE_AUTO_APPLY_DELAY_MS = 180;
 const COLLAPSE_ARCHIVE_CHECK_DELAY_MS = 240;
 const COLLAPSE_ARCHIVE_CHECK_RETRIES = 6;
 const COLLAPSE_ARCHIVE_TRIGGER_WINDOW_MS = 2200;
-const COLLAPSE_ARCHIVE_ACTION_TEXTS = ["archive", "归档"];
+const COLLAPSE_ARCHIVE_ACTION_TEXTS = ["archive", "archived", "归档"];
 
 const getUncollapsedMessageNodes = () =>
   getMessageNodes().filter((node) => !isToolkitCollapsedMessageNode(node));

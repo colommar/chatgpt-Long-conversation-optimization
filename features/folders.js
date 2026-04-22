@@ -300,7 +300,7 @@ const findFolderAnchor = () => {
 
   const history = findFolderHistoryRoot();
   if (history instanceof HTMLElement) {
-    const section = history.closest(".group\/sidebar-expando-section") || history.parentElement;
+    const section = history.closest(".group\\/sidebar-expando-section") || history.parentElement;
     if (section instanceof HTMLElement) {
       return {
         section,
@@ -310,7 +310,7 @@ const findFolderAnchor = () => {
     }
   }
 
-  const sectionCandidates = Array.from(document.querySelectorAll(".group\/sidebar-expando-section")).filter(
+  const sectionCandidates = Array.from(document.querySelectorAll(".group\\/sidebar-expando-section")).filter(
     (section) => section instanceof HTMLElement,
   );
   for (const section of sectionCandidates) {
@@ -348,7 +348,7 @@ const findFolderAnchor = () => {
   );
   if (heading instanceof HTMLElement) {
     const headerButton = heading.closest("button");
-    const section = headerButton?.closest(".group\/sidebar-expando-section");
+    const section = headerButton?.closest(".group\\/sidebar-expando-section");
     if (section instanceof HTMLElement) {
       return {
         section,
@@ -361,7 +361,7 @@ const findFolderAnchor = () => {
   const fallbackHeading = document.querySelector("h2.__menu-label");
   if (fallbackHeading instanceof HTMLElement) {
     const headerButton = fallbackHeading.closest("button");
-    const section = headerButton?.closest(".group\/sidebar-expando-section");
+    const section = headerButton?.closest(".group\\/sidebar-expando-section");
     if (section instanceof HTMLElement) {
       return {
         section,
