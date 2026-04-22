@@ -6,6 +6,33 @@ A browser extension for `ChatGPT Web` focused on making long conversations easie
 
 Current active maintainer: `bujue3709` (primary / sole active maintainer)
 
+## ChatGPT Virtualized List Impact (Important)
+
+Recent ChatGPT Web versions use a virtualized list in the conversation area:
+
+- The browser only keeps part of the nearby message DOM mounted.
+- Older messages are loaded on demand during scroll and may be unmounted again when far outside the viewport.
+
+Impact on this extension:
+
+- Features that depend on full DOM coverage (locate/search/timeline jump) can only operate on messages that are currently loaded or already captured in local runtime cache.
+- If a target segment has not been rendered yet, the extension may need extra scroll loading before accurate location actions can complete.
+
+## Current Feature Availability (2026-04-22)
+
+Based on current implementation and verified feedback:
+
+- Available: long-conversation cleanup (manual/auto/recover + memory)
+- Available: JSON export (prefers loaded + cached messages)
+- Available: prompt library (add/delete/search/category/sort/import/export/copy)
+- Available: folder management (create/rename/delete/group/sort/drag)
+- Available: language switch, theme sync, and draggable toolbar UI
+- Available: in-page search (works on loaded + cached messages; virtualization-aware hints shown when needed)
+- Available: timeline node rendering, node growth, and active-node sync with viewport scrolling
+- Not stable yet: timeline node click-to-jump
+
+If you need reliable positioning in very long conversations, first scroll near the target range so ChatGPT renders that segment, then run search/location actions.
+
 ## Supported Sites
 
 - `https://chat.openai.com/*`
@@ -26,7 +53,7 @@ Current active maintainer: `bujue3709` (primary / sole active maintainer)
 - Prompt library: add, delete, search, categorize, sort, import JSON, export JSON, and copy prompts with one click.
 - Settings panel: tweak core preferences locally via a native-style modal, supporting real-time variable tuning and auto-persistence.
 - LaTeX formula copy: hover rendered formulas and copy LaTeX source in one click.
-- Timeline navigation: generate timeline nodes from loaded user messages, preview them, jump to them, and move the timeline panel around.
+- Timeline navigation: generate timeline nodes from loaded user messages, preview them, follow viewport activation, and move the timeline panel around (click-to-jump is currently unstable).
 - Conversation folders: manage chat folders above the native “Your chats” list without replacing native conversation nodes.
 - Multilingual UI: currently supports Chinese and English, auto-detects the browser language, falls back to English when no match is available, and can be changed manually from the toolbar.
 - Theme sync: the toolbar, timeline, prompt modal, and folder UI follow ChatGPT light/dark appearance.
@@ -124,7 +151,7 @@ The toolbar footer also includes two lightweight links:
 - It only uses user messages that are already loaded in the current page DOM.
 - The node counter format is `current/total`.
 - Hover a node to preview the message.
-- Click a node to jump to that user message.
+- Click-to-jump is currently unstable under ChatGPT virtualization and is being repaired.
 - The active timeline node follows page scrolling.
 - The timeline supports wheel scrolling.
 - The timeline panel can be dragged by its header.
@@ -392,6 +419,7 @@ Import rules:
 - LaTeX copy mainly targets rendered formula nodes. For `LaTeX` code blocks, use ChatGPT's native copy button.
 - Folder management depends on the current ChatGPT sidebar DOM structure and stores classification locally. It does not sync to the ChatGPT service.
 - ChatGPT DOM changes may require selector updates over time.
+- Timeline node click-to-jump is currently unstable in long virtualized conversations.
 
 ## Maintainer
 
