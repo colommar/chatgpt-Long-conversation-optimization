@@ -5,6 +5,13 @@
 
 let timelineBoundScrollRoot = null;
 let timelineWindowScrollBound = false;
+const TIMELINE_SOURCE_SYNC_INTERVAL_MS = 140;
+const TIMELINE_JUMP_RETRY_DELAY_MS = 180;
+const TIMELINE_JUMP_RETRY_ATTEMPTS = 4;
+const TIMELINE_JUMP_STEP_DELAY_MS = 72;
+const TIMELINE_JUMP_STEP_MAX_STEPS = 6;
+let timelineJumpResolveTimer = null;
+let timelineJumpScrollTimer = null;
 
 const getTimelineElements = () => {
   const timeline = document.getElementById(TIMELINE_ID);
@@ -108,15 +115,26 @@ const getTimelineSourceOrder = (source, index) => {
 
 const getTimelineSourceNodes = () => {
   const sourceItems =
-    typeof getCachedMessageEntries === "function"
-      ? getCachedMessageEntries({ role: "user" })
-      : getUserMessageNodes();
+    typeof getConversationMessageEntries === "function"
+      ? getConversationMessageEntries({
+          role: "user",
+          mode: TOOLKIT_MESSAGE_MODE_EXTENDED,
+          refreshDom: true,
+        })
+      : typeof getCachedMessageEntries === "function"
+        ? getCachedMessageEntries({ role: "user", mode: TOOLKIT_MESSAGE_MODE_EXTENDED })
+        : getUserMessageNodes();
   const fallbackItems =
     sourceItems.length > 0
       ? sourceItems
-      : typeof getCachedMessageEntries === "function"
-        ? getCachedMessageEntries()
-        : getMessageNodes();
+      : typeof getConversationMessageEntries === "function"
+        ? getConversationMessageEntries({
+            mode: TOOLKIT_MESSAGE_MODE_EXTENDED,
+            refreshDom: false,
+          })
+        : typeof getCachedMessageEntries === "function"
+          ? getCachedMessageEntries({ mode: TOOLKIT_MESSAGE_MODE_EXTENDED })
+          : getMessageNodes();
   const uniqueItems = [];
   const seenKeys = new Set();
 
@@ -288,7 +306,7 @@ const buildTimelineSignature = (items) =>
   items.map((item) => `${item.key}:${Math.round(item.position * 1000)}`).join("|");
 
 const buildTimelineSourceSignature = (sources) =>
-  `${state.messageCacheRevision || 0}|${sources
+  `${sources.length}|${sources
     .map((source, index) => `${getTimelineSourceKey(source, index)}:${getTimelineSourceText(source).length}`)
     .join("|")}`;
 
@@ -483,6 +501,219 @@ const highlightTimelineMessageNode = (node) => {
   }, 1400);
 };
 
+const clearTimelineJumpResolveTimer = () => {
+  if (timelineJumpResolveTimer) {
+    clearTimeout(timelineJumpResolveTimer);
+    timelineJumpResolveTimer = null;
+  }
+};
+
+const clearTimelineJumpScrollTimer = () => {
+  if (timelineJumpScrollTimer) {
+    clearTimeout(timelineJumpScrollTimer);
+    timelineJumpScrollTimer = null;
+  }
+};
+
+const getConversationScrollController = () => {
+  const scrollRoot =
+    typeof resolveConversationScrollRoot === "function"
+      ? resolveConversationScrollRoot()
+      : null;
+  if (!(scrollRoot instanceof HTMLElement)) {
+    return null;
+  }
+
+  const isDocumentLike =
+    typeof isConversationDocumentScrollRoot === "function" &&
+    isConversationDocumentScrollRoot(scrollRoot);
+
+  if (isDocumentLike) {
+    const doc = document.scrollingElement || document.documentElement || document.body;
+    return {
+      isDocumentLike: true,
+      viewportHeight: Math.max(1, window.innerHeight || document.documentElement?.clientHeight || 0),
+      getTop: () =>
+        Math.max(0, window.scrollY || window.pageYOffset || document.documentElement?.scrollTop || 0),
+      getMaxTop: () => {
+        const viewportHeight = Math.max(1, window.innerHeight || document.documentElement?.clientHeight || 0);
+        return Math.max(0, (doc?.scrollHeight || 0) - viewportHeight);
+      },
+      setTop: (top, behavior = "auto") => {
+        window.scrollTo({ top, behavior });
+      },
+    };
+  }
+
+  return {
+    isDocumentLike: false,
+    viewportHeight: Math.max(1, scrollRoot.clientHeight || 1),
+    getTop: () => Math.max(0, scrollRoot.scrollTop || 0),
+    getMaxTop: () => Math.max(0, scrollRoot.scrollHeight - scrollRoot.clientHeight),
+    setTop: (top, behavior = "auto") => {
+      scrollRoot.scrollTo({ top, behavior });
+    },
+  };
+};
+
+const getTimelineOrderTargetTop = (order, totalCount, maxTop) => {
+  const normalizedOrder = Number.isFinite(order) ? Math.max(1, Math.trunc(order)) : 1;
+  const normalizedTotal = Number.isFinite(totalCount) ? Math.max(1, Math.trunc(totalCount)) : 1;
+  const ratio =
+    normalizedTotal <= 1 ? 1 : clampTimelineValue((normalizedOrder - 1) / (normalizedTotal - 1), 0, 1);
+  if (ratio <= 0.02) {
+    return 0;
+  }
+  if (ratio >= 0.98) {
+    return maxTop;
+  }
+  return Math.round(maxTop * ratio);
+};
+
+const scrollConversationToTimelineOrder = (order, totalCount, options = {}) => {
+  const { behavior = "smooth" } = options;
+  const controller = getConversationScrollController();
+  if (!controller) {
+    return false;
+  }
+
+  const maxTop = controller.getMaxTop();
+  const targetTop = getTimelineOrderTargetTop(order, totalCount, maxTop);
+  controller.setTop(targetTop, behavior);
+  return true;
+};
+
+const simulateConversationScrollTowardsTimelineOrder = (order, totalCount, options = {}) => {
+  const {
+    maxSteps = TIMELINE_JUMP_STEP_MAX_STEPS,
+    stepDelayMs = TIMELINE_JUMP_STEP_DELAY_MS,
+    onDone = null,
+  } = options;
+  const controller = getConversationScrollController();
+  if (!controller) {
+    return false;
+  }
+
+  const maxTop = controller.getMaxTop();
+  const targetTop = getTimelineOrderTargetTop(order, totalCount, maxTop);
+  const safeMaxSteps = Math.max(1, Math.trunc(maxSteps));
+  const stepPx = clampTimelineValue(
+    Math.round(controller.viewportHeight * 0.72),
+    160,
+    860,
+  );
+
+  clearTimelineJumpScrollTimer();
+
+  let remainingSteps = safeMaxSteps;
+  const runStep = () => {
+    const currentTop = controller.getTop();
+    const distance = targetTop - currentTop;
+    if (Math.abs(distance) <= stepPx || remainingSteps <= 0) {
+      controller.setTop(targetTop, "auto");
+      if (typeof getMessageNodes === "function") {
+        getMessageNodes({ forceRefresh: true });
+      }
+      if (typeof onDone === "function") {
+        onDone();
+      }
+      return;
+    }
+
+    const nextTop = currentTop + Math.sign(distance) * stepPx;
+    controller.setTop(nextTop, "auto");
+    if (typeof getMessageNodes === "function") {
+      getMessageNodes({ forceRefresh: true });
+    }
+    remainingSteps -= 1;
+    timelineJumpScrollTimer = setTimeout(runStep, stepDelayMs);
+  };
+
+  runStep();
+  return true;
+};
+
+const queueTimelineNodeResolveAfterJump = (index, options = {}) => {
+  clearTimelineJumpResolveTimer();
+  clearTimelineJumpScrollTimer();
+  const { highlightMessage = false, attempts = TIMELINE_JUMP_RETRY_ATTEMPTS } = options;
+  const maxAttempts = Math.max(1, Math.trunc(attempts));
+
+  const attemptResolve = (remainingAttempts) => {
+    timelineJumpResolveTimer = setTimeout(() => {
+      timelineJumpResolveTimer = null;
+
+      if (!timelineState.visible || document.hidden || document.visibilityState === "hidden") {
+        return;
+      }
+
+      const item = timelineState.items[index];
+      if (!item) {
+        return;
+      }
+
+      const liveNode = getTimelineSourceNode(item.source);
+      if (liveNode instanceof HTMLElement && liveNode.isConnected) {
+        item.node = liveNode;
+        if (typeof scrollElementIntoConversationView === "function") {
+          scrollElementIntoConversationView(liveNode, { behavior: "smooth", block: "center" });
+        } else {
+          liveNode.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+        if (highlightMessage) {
+          highlightTimelineMessageNode(liveNode);
+        }
+        return;
+      }
+
+      if (remainingAttempts <= 1) {
+        showTimelineHint(t("timeline.hintMessageNotLoaded"));
+        return;
+      }
+
+      const currentOrder = Number.isFinite(item.order) ? item.order : index + 1;
+      const simulated = simulateConversationScrollTowardsTimelineOrder(
+        currentOrder,
+        timelineState.totalUserCount,
+        {
+          maxSteps: TIMELINE_JUMP_STEP_MAX_STEPS,
+          stepDelayMs: TIMELINE_JUMP_STEP_DELAY_MS,
+          onDone: () => {
+            attemptResolve(remainingAttempts - 1);
+          },
+        },
+      );
+      if (!simulated) {
+        scrollConversationToTimelineOrder(currentOrder, timelineState.totalUserCount, {
+          behavior: "auto",
+        });
+        attemptResolve(remainingAttempts - 1);
+        return;
+      }
+      if (typeof getMessageNodes === "function") {
+        getMessageNodes({ forceRefresh: true });
+      }
+    }, TIMELINE_JUMP_RETRY_DELAY_MS);
+  };
+
+  if (typeof getMessageNodes === "function") {
+    getMessageNodes({ forceRefresh: true });
+  }
+  const currentItem = timelineState.items[index];
+  if (currentItem) {
+    const currentOrder = Number.isFinite(currentItem.order) ? currentItem.order : index + 1;
+    simulateConversationScrollTowardsTimelineOrder(currentOrder, timelineState.totalUserCount, {
+      maxSteps: Math.max(1, Math.trunc(TIMELINE_JUMP_STEP_MAX_STEPS / 2)),
+      stepDelayMs: TIMELINE_JUMP_STEP_DELAY_MS,
+      onDone: () => {
+        attemptResolve(maxAttempts);
+      },
+    });
+    return;
+  }
+  attemptResolve(maxAttempts);
+};
+
 const setTimelineActiveIndex = (index, options = {}) => {
   if (index < 0 || index >= timelineState.items.length) {
     updateTimelineCount(0, timelineState.totalUserCount);
@@ -510,13 +741,22 @@ const setTimelineActiveIndex = (index, options = {}) => {
   }
 
   if (scrollToMessage && liveNode instanceof HTMLElement && liveNode.isConnected) {
+    clearTimelineJumpResolveTimer();
+    clearTimelineJumpScrollTimer();
     if (typeof scrollElementIntoConversationView === "function") {
       scrollElementIntoConversationView(liveNode, { behavior: "smooth", block: "center" });
     } else {
       liveNode.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   } else if (scrollToMessage) {
-    showTimelineHint(t("timeline.hintMessageNotLoaded"));
+    const jumped = scrollConversationToTimelineOrder(currentOrder, timelineState.totalUserCount, {
+      behavior: "smooth",
+    });
+    if (jumped) {
+      queueTimelineNodeResolveAfterJump(index, { highlightMessage });
+    } else {
+      showTimelineHint(t("timeline.hintMessageNotLoaded"));
+    }
   }
 
   if (highlightMessage && liveNode instanceof HTMLElement && liveNode.isConnected) {
@@ -786,6 +1026,18 @@ const syncTimelineActiveFromViewport = () => {
   return nextIndex >= 0;
 };
 
+const hasTimelineSourceChangedOnScroll = () => {
+  const now = Date.now();
+  if (now - (timelineState.sourceCheckAt || 0) < TIMELINE_SOURCE_SYNC_INTERVAL_MS) {
+    return false;
+  }
+  timelineState.sourceCheckAt = now;
+
+  const sourceNodes = getTimelineSourceNodes();
+  const sourceSignature = buildTimelineSourceSignature(sourceNodes);
+  return !isSameTimelineSource(sourceNodes, sourceSignature);
+};
+
 const onTimelineWindowScroll = () => {
   if (document.hidden || document.visibilityState === "hidden") {
     return;
@@ -796,15 +1048,20 @@ const onTimelineWindowScroll = () => {
   if (isTimelineInteractionLocked()) {
     return;
   }
-  if (timelineState.items.length === 0) {
-    return;
-  }
   if (timelineScrollTicking) {
     return;
   }
   timelineScrollTicking = true;
   requestAnimationFrame(() => {
     timelineScrollTicking = false;
+    if (hasTimelineSourceChangedOnScroll()) {
+      scheduleTimelineRefresh();
+      return;
+    }
+    if (timelineState.items.length === 0) {
+      scheduleTimelineRefresh();
+      return;
+    }
     const synced = syncTimelineActiveFromViewport();
     if (!synced) {
       scheduleTimelineRefresh();
@@ -825,16 +1082,29 @@ const resolveTimelineScrollRoot = () => {
     }
   }
 
-  const explicitRoot = document.querySelector("[data-scroll-root]");
-  if (explicitRoot instanceof HTMLElement) {
-    return explicitRoot;
-  }
-
-  const main = document.querySelector("main");
+  const main =
+    typeof getConversationMain === "function"
+      ? getConversationMain()
+      : document.querySelector("main");
   if (main instanceof HTMLElement) {
     const mainRoot = main.closest("[data-scroll-root]");
     if (mainRoot instanceof HTMLElement) {
       return mainRoot;
+    }
+
+    const scopedRoots = Array.from(document.querySelectorAll("[data-scroll-root]")).filter(
+      (root) =>
+        root instanceof HTMLElement &&
+        (root.contains(main) || main.contains(root)),
+    );
+    const scopedScrollableRoot = scopedRoots.find(
+      (root) => root.scrollHeight > root.clientHeight + 24,
+    );
+    if (scopedScrollableRoot instanceof HTMLElement) {
+      return scopedScrollableRoot;
+    }
+    if (scopedRoots[0] instanceof HTMLElement) {
+      return scopedRoots[0];
     }
 
     let current = main.parentElement;
@@ -850,6 +1120,13 @@ const resolveTimelineScrollRoot = () => {
       }
       current = current.parentElement;
     }
+  }
+
+  const fallbackRoot = Array.from(document.querySelectorAll("[data-scroll-root]")).find(
+    (root) => root instanceof HTMLElement && root.scrollHeight > root.clientHeight + 24,
+  );
+  if (fallbackRoot instanceof HTMLElement) {
+    return fallbackRoot;
   }
 
   if (document.scrollingElement instanceof HTMLElement) {
@@ -1231,10 +1508,13 @@ const clearTimelineRefreshTimer = () => {
 };
 
 const forceTimelineRefresh = () => {
+  clearTimelineJumpResolveTimer();
+  clearTimelineJumpScrollTimer();
   timelineState.rendered = false;
   timelineState.sourceSignature = "";
   timelineState.signature = "";
   timelineState.contentHeight = 0;
+  timelineState.sourceCheckAt = 0;
 
   if (!timelineState.visible) {
     return;
@@ -1305,6 +1585,8 @@ const setTimelineScrollListenerEnabled = (enabled) => {
 };
 
 const destroyTimeline = () => {
+  clearTimelineJumpResolveTimer();
+  clearTimelineJumpScrollTimer();
   clearTimelineRefreshTimer();
   if (timelineHintTimer) {
     clearTimeout(timelineHintTimer);
@@ -1335,6 +1617,7 @@ const destroyTimeline = () => {
   timelineState.contentHeight = 0;
   timelineState.rendered = false;
   timelineState.refreshPending = false;
+  timelineState.sourceCheckAt = 0;
 };
 
 const updateTimelineCount = (currentNodeOrder, totalCount) => {
@@ -1519,7 +1802,10 @@ const renderTimeline = () => {
 
   const conversationChanged = ensureConversationState();
   if (conversationChanged) {
+    clearTimelineJumpResolveTimer();
+    clearTimelineJumpScrollTimer();
     timelineState.activeIndex = -1;
+    timelineState.sourceCheckAt = 0;
     updateTimelineCount(0, 0);
     hideTimelinePreview();
     hideTimelineHint();

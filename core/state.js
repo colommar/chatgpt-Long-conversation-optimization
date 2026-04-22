@@ -14,6 +14,13 @@ const COLLAPSE_MEMORY_LOCAL_FALLBACK_KEY = "chatgpt-toolkit-collapse-memory-fall
 let COLLAPSE_MEMORY_RETENTION_MS = 10 * 24 * 60 * 60 * 1000;
 let COLLAPSE_AUTO_REOPTIMIZE_BUFFER = 10;
 const COLLAPSE_AUTO_REOPTIMIZE_DELAY_MS = 180;
+const TOOLKIT_MESSAGE_MODE_LOADED = "loaded";
+const TOOLKIT_MESSAGE_MODE_EXTENDED = "extended";
+const TOOLKIT_MESSAGE_MODE_VALUES = Object.freeze([
+  TOOLKIT_MESSAGE_MODE_LOADED,
+  TOOLKIT_MESSAGE_MODE_EXTENDED,
+]);
+let TOOLKIT_MESSAGE_MODE = TOOLKIT_MESSAGE_MODE_LOADED;
 const THEME_ATTR = "data-toolkit-theme";
 const TIMELINE_ID = "chatgpt-conversation-toolkit-timeline";
 const TIMELINE_TRACK_ID = "chatgpt-conversation-toolkit-timeline-track";
@@ -50,6 +57,17 @@ const state = {
   anchorParent: null,
   messageCache: new Map(),
   messageCacheRevision: 0,
+  messageStoreLastRefreshAt: 0,
+  messageStoreLastConversationKey: "",
+  domAdapterHealth: {
+    ok: true,
+    checkedAt: 0,
+    conversationMainFound: false,
+    conversationMessageCount: 0,
+    sidebarHistoryFound: false,
+    issues: [],
+  },
+  domAdapterHealthSignature: "",
   // 搜索相关状态
   searchQuery: '',
   searchMatches: [],
@@ -75,6 +93,7 @@ const timelineState = {
   items: [],
   sourceNodes: [],
   sourceSignature: "",
+  sourceCheckAt: 0,
   totalUserCount: 0,
   activeIndex: -1,
   hoverIndex: -1,
@@ -147,6 +166,7 @@ const TOOLKIT_CONFIG_DEFAULTS = Object.freeze({
   timelineVisibleNodeCapacity: 10,
   timelineMaxNodes: 20,
   collapseMemoryRetentionDays: 10,
+  messageMode: TOOLKIT_MESSAGE_MODE_LOADED,
 });
 const TOOLKIT_CONFIG_LIMITS = Object.freeze({
   keepLatest: { min: 1, max: 1000 },
@@ -196,6 +216,9 @@ const normalizeToolkitConfig = (config = {}) => ({
     TOOLKIT_CONFIG_DEFAULTS.collapseMemoryRetentionDays,
     TOOLKIT_CONFIG_LIMITS.collapseMemoryRetentionDays,
   ),
+  messageMode: TOOLKIT_MESSAGE_MODE_VALUES.includes(config.messageMode)
+    ? config.messageMode
+    : TOOLKIT_CONFIG_DEFAULTS.messageMode,
 });
 
 const applyToolkitConfig = (config = {}) => {
@@ -205,6 +228,7 @@ const applyToolkitConfig = (config = {}) => {
   TIMELINE_VISIBLE_NODE_CAPACITY = normalized.timelineVisibleNodeCapacity;
   TIMELINE_MAX_NODES = normalized.timelineMaxNodes;
   COLLAPSE_MEMORY_RETENTION_MS = normalized.collapseMemoryRetentionDays * 24 * 60 * 60 * 1000;
+  TOOLKIT_MESSAGE_MODE = normalized.messageMode;
   return normalized;
 };
 
@@ -215,6 +239,7 @@ const getToolkitConfig = () =>
     timelineVisibleNodeCapacity: TIMELINE_VISIBLE_NODE_CAPACITY,
     timelineMaxNodes: TIMELINE_MAX_NODES,
     collapseMemoryRetentionDays: Math.floor(COLLAPSE_MEMORY_RETENTION_MS / 86400000),
+    messageMode: TOOLKIT_MESSAGE_MODE,
   });
 
 const loadToolkitConfig = () => {

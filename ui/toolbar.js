@@ -662,9 +662,8 @@ const SETTINGS_MODAL_ID = "chatgpt-toolkit-settings-modal";
 const SETTINGS_INPUT_IDS = Object.freeze({
   keepLatest: "toolkit-setting-keepLatest",
   autoReoptimizeBuffer: "toolkit-setting-buffer",
-  timelineVisibleNodeCapacity: "toolkit-setting-timelineCapacity",
-  timelineMaxNodes: "toolkit-setting-timelineMaxNodes",
   collapseMemoryRetentionDays: "toolkit-setting-retentionDays",
+  messageMode: "toolkit-setting-messageMode",
 });
 
 const getSettingsModal = () => document.getElementById(SETTINGS_MODAL_ID);
@@ -679,9 +678,8 @@ const closeSettingsModal = () => {
 const getSettingsFallbackConfig = () => ({
   keepLatest: state.keepLatest || 20,
   autoReoptimizeBuffer: COLLAPSE_AUTO_REOPTIMIZE_BUFFER || 10,
-  timelineVisibleNodeCapacity: TIMELINE_VISIBLE_NODE_CAPACITY || 10,
-  timelineMaxNodes: TIMELINE_MAX_NODES || 20,
   collapseMemoryRetentionDays: Math.floor((COLLAPSE_MEMORY_RETENTION_MS || 864000000) / 86400000),
+  messageMode: TOOLKIT_MESSAGE_MODE || TOOLKIT_MESSAGE_MODE_LOADED,
 });
 
 const getSettingsConfig = (config) => {
@@ -695,16 +693,18 @@ const getSettingsConfig = (config) => {
 
 const readSettingsInputValue = (id) => {
   const input = document.getElementById(id);
-  return input instanceof HTMLInputElement ? input.value : undefined;
+  if (input instanceof HTMLInputElement || input instanceof HTMLSelectElement) {
+    return input.value;
+  }
+  return undefined;
 };
 
 const readSettingsDraft = () => {
   const draft = {
     keepLatest: readSettingsInputValue(SETTINGS_INPUT_IDS.keepLatest),
     autoReoptimizeBuffer: readSettingsInputValue(SETTINGS_INPUT_IDS.autoReoptimizeBuffer),
-    timelineVisibleNodeCapacity: readSettingsInputValue(SETTINGS_INPUT_IDS.timelineVisibleNodeCapacity),
-    timelineMaxNodes: readSettingsInputValue(SETTINGS_INPUT_IDS.timelineMaxNodes),
     collapseMemoryRetentionDays: readSettingsInputValue(SETTINGS_INPUT_IDS.collapseMemoryRetentionDays),
+    messageMode: readSettingsInputValue(SETTINGS_INPUT_IDS.messageMode),
   };
   return Object.values(draft).some((value) => value !== undefined) ? draft : null;
 };
@@ -712,13 +712,6 @@ const readSettingsDraft = () => {
 const applySettingsSideEffects = (previousConfig, nextConfig) => {
   if (!previousConfig || !nextConfig) {
     return;
-  }
-
-  const timelineConfigChanged =
-    previousConfig.timelineVisibleNodeCapacity !== nextConfig.timelineVisibleNodeCapacity ||
-    previousConfig.timelineMaxNodes !== nextConfig.timelineMaxNodes;
-  if (timelineConfigChanged && typeof forceTimelineRefresh === "function") {
-    forceTimelineRefresh();
   }
 
   const retentionChanged =
@@ -736,6 +729,18 @@ const applySettingsSideEffects = (previousConfig, nextConfig) => {
     retentionChanged;
   if (autoOptimizeConfigChanged && typeof scheduleAutoReoptimizeCurrentConversation === "function") {
     scheduleAutoReoptimizeCurrentConversation();
+  }
+
+  const messageModeChanged = previousConfig.messageMode !== nextConfig.messageMode;
+  if (messageModeChanged) {
+    state.searchMatches = [];
+    state.currentMatchIndex = -1;
+    clearTextHighlights();
+    clearSearchHighlight();
+    updateSearchUI();
+    if (typeof forceTimelineRefresh === "function") {
+      forceTimelineRefresh();
+    }
   }
 };
 
@@ -766,21 +771,22 @@ const renderSettingsModal = (modal, draftConfig = null) => {
         </div>
 
         <div class="chatgpt-toolkit-form-group">
-          <label class="chatgpt-toolkit-form-label">${t("settings.timelineVisibleNodeCapacity.label")}</label>
-          <input type="number" id="${SETTINGS_INPUT_IDS.timelineVisibleNodeCapacity}" class="chatgpt-toolkit-input" value="${config.timelineVisibleNodeCapacity}" min="1" max="100" />
-          <p class="chatgpt-toolkit-form-desc">${t("settings.timelineVisibleNodeCapacity.desc")}</p>
-        </div>
-
-        <div class="chatgpt-toolkit-form-group">
-          <label class="chatgpt-toolkit-form-label">${t("settings.timelineMaxNodes.label")}</label>
-          <input type="number" id="${SETTINGS_INPUT_IDS.timelineMaxNodes}" class="chatgpt-toolkit-input" value="${config.timelineMaxNodes}" min="1" max="100" />
-          <p class="chatgpt-toolkit-form-desc">${t("settings.timelineMaxNodes.desc")}</p>
-        </div>
-
-        <div class="chatgpt-toolkit-form-group">
           <label class="chatgpt-toolkit-form-label">${t("settings.collapseMemoryRetentionDays.label")}</label>
           <input type="number" id="${SETTINGS_INPUT_IDS.collapseMemoryRetentionDays}" class="chatgpt-toolkit-input" value="${config.collapseMemoryRetentionDays}" min="1" max="365" />
           <p class="chatgpt-toolkit-form-desc">${t("settings.collapseMemoryRetentionDays.desc")}</p>
+        </div>
+
+        <div class="chatgpt-toolkit-form-group">
+          <label class="chatgpt-toolkit-form-label" for="${SETTINGS_INPUT_IDS.messageMode}">${t("settings.messageMode.label")}</label>
+          <select id="${SETTINGS_INPUT_IDS.messageMode}" class="chatgpt-toolkit-input">
+            <option value="${TOOLKIT_MESSAGE_MODE_LOADED}"${config.messageMode === TOOLKIT_MESSAGE_MODE_LOADED ? " selected" : ""}>
+              ${t("settings.messageMode.loaded")}
+            </option>
+            <option value="${TOOLKIT_MESSAGE_MODE_EXTENDED}"${config.messageMode === TOOLKIT_MESSAGE_MODE_EXTENDED ? " selected" : ""}>
+              ${t("settings.messageMode.extended")}
+            </option>
+          </select>
+          <p class="chatgpt-toolkit-form-desc">${t("settings.messageMode.desc")}</p>
         </div>
       </div>
       <div class="chatgpt-toolkit-prompt-footer">

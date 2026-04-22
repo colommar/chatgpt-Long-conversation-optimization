@@ -14,6 +14,9 @@ if (!window[TOOLKIT_BOOTSTRAP_FLAG]) {
   const TOOLKIT_ROUTE_HOOK_FLAG = "__chatgptConversationToolkitRouteHooked";
   const OBSERVER_ROOT_SYNC_DELAY_MS = 260;
   const OBSERVER_ROOT_RETRY_LIMIT = 24;
+  const OBSERVER_CONVERSATION_FLUSH_DELAY_MS = 90;
+  const OBSERVER_SIDEBAR_FLUSH_DELAY_MS = 120;
+  const MESSAGE_STORE_SYNC_MIN_INTERVAL_MS = 120;
 
   let resizeListenerAdded = false;
   let collapseMemorySyncTimer = 0;
@@ -138,6 +141,12 @@ if (!window[TOOLKIT_BOOTSTRAP_FLAG]) {
   let observerNeedsConversationSync = false;
   let observerNeedsTimelineRefresh = false;
   let observerNeedsFolderRefresh = false;
+  let conversationMutationFlushTimer = 0;
+  let sidebarMutationFlushTimer = 0;
+  let pendingConversationMutationRefresh = false;
+  let pendingSidebarMutationRefresh = false;
+  let lastMessageStoreSyncAt = 0;
+  let lastDomHealthOk = true;
 
   const getObservedElement = (node) => {
     if (node instanceof Element) {
@@ -237,7 +246,9 @@ if (!window[TOOLKIT_BOOTSTRAP_FLAG]) {
 
       if (needsConversationSync || needsTimelineRefresh) {
         ensureConversationState();
-        getMessageNodes();
+        refreshMessageStoreSnapshot({
+          force: needsConversationSync,
+        });
       }
 
       if (needsConversationSync) {
@@ -252,6 +263,10 @@ if (!window[TOOLKIT_BOOTSTRAP_FLAG]) {
         folderRefresh: needsFolderRefresh,
         timelineRefresh: needsTimelineRefresh,
       });
+
+      if (needsPresenceCheck) {
+        syncDomAdapterHealth({ report: true });
+      }
     });
   };
 
@@ -276,39 +291,53 @@ if (!window[TOOLKIT_BOOTSTRAP_FLAG]) {
     queueObserverCallback();
   };
 
-  const getConversationMessageNodes = () => getMessageNodes();
+  const syncDomAdapterHealth = ({ report = false } = {}) => {
+    if (typeof runDomAdapterHealthCheck !== "function") {
+      return;
+    }
+
+    const health = runDomAdapterHealthCheck({ refreshMessages: false });
+    if (report && !health.ok && lastDomHealthOk) {
+      updateStatusByKey("status.domAdapterDegraded", "warn");
+    }
+    lastDomHealthOk = Boolean(health.ok);
+  };
+
+  const refreshMessageStoreSnapshot = ({ force = false } = {}) => {
+    if (typeof getMessageNodes !== "function") {
+      return;
+    }
+
+    const now = Date.now();
+    if (!force && now - lastMessageStoreSyncAt < MESSAGE_STORE_SYNC_MIN_INTERVAL_MS) {
+      return;
+    }
+
+    getMessageNodes({ forceRefresh: force });
+    lastMessageStoreSyncAt = now;
+  };
 
   const resolveConversationObserverRoot = () => {
+    const conversationMain =
+      typeof getConversationMain === "function" ? getConversationMain() : document.querySelector("main");
+    if (conversationMain instanceof HTMLElement) {
+      const threadRoot = conversationMain.closest("#thread");
+      if (threadRoot instanceof HTMLElement) {
+        return threadRoot;
+      }
+
+      const virtualizedRoot =
+        conversationMain.querySelector("[data-virtualized-list]") ||
+        conversationMain.querySelector("[data-test-render-count]") ||
+        conversationMain.querySelector('[data-testid*="conversation-turn"]')?.parentElement;
+      if (virtualizedRoot instanceof HTMLElement) {
+        return virtualizedRoot;
+      }
+
+      return conversationMain;
+    }
+
     const scrollRoot = document.querySelector("[data-scroll-root]");
-    const messageNodes = getConversationMessageNodes();
-    const firstMessage = messageNodes[0];
-    const lastMessage = messageNodes[messageNodes.length - 1];
-
-    if (firstMessage instanceof HTMLElement && lastMessage instanceof HTMLElement) {
-      let container = firstMessage;
-      while (container instanceof HTMLElement && !container.contains(lastMessage)) {
-        container = container.parentElement;
-      }
-
-      if (container instanceof HTMLElement) {
-        if (container.matches(MESSAGE_ROLE_SELECTOR) && container.parentElement instanceof HTMLElement) {
-          container = container.parentElement;
-        }
-
-        if (container !== document.body && container !== document.documentElement) {
-          return container;
-        }
-      }
-    }
-
-    if (firstMessage instanceof HTMLElement) {
-      const parent = firstMessage.parentElement;
-      if (parent instanceof HTMLElement && parent !== document.body) {
-        return parent;
-      }
-      return firstMessage;
-    }
-
     if (scrollRoot instanceof HTMLElement) {
       const mainInsideRoot = scrollRoot.querySelector("main");
       return mainInsideRoot instanceof HTMLElement ? mainInsideRoot : scrollRoot;
@@ -361,6 +390,16 @@ if (!window[TOOLKIT_BOOTSTRAP_FLAG]) {
     }
     disconnectConversationObserver();
     disconnectSidebarObserver();
+    if (conversationMutationFlushTimer) {
+      clearTimeout(conversationMutationFlushTimer);
+      conversationMutationFlushTimer = 0;
+    }
+    if (sidebarMutationFlushTimer) {
+      clearTimeout(sidebarMutationFlushTimer);
+      sidebarMutationFlushTimer = 0;
+    }
+    pendingConversationMutationRefresh = false;
+    pendingSidebarMutationRefresh = false;
   };
 
   const getConversationMutationElements = (mutation) => {
@@ -390,31 +429,41 @@ if (!window[TOOLKIT_BOOTSTRAP_FLAG]) {
   const mutationTouchesConversationMessage = (mutation) =>
     getConversationMutationElements(mutation).some((element) => isConversationMessageElement(element));
 
-  const syncMessageCacheFromConversationMutations = (mutations) => {
-    if (typeof syncMessageCacheFromNodes !== "function") {
+  const queueConversationMutationRefresh = () => {
+    pendingConversationMutationRefresh = true;
+    if (conversationMutationFlushTimer) {
       return;
     }
-
-    const messageNodes = [];
-    mutations.forEach((mutation) => {
-      [...Array.from(mutation.addedNodes || []), ...Array.from(mutation.removedNodes || [])].forEach((node) => {
-        const element = getObservedElement(node);
-        if (!(element instanceof Element)) {
-          return;
-        }
-        if (!element.matches?.(MESSAGE_ROOT_SELECTOR) && !element.querySelector?.(MESSAGE_ROOT_SELECTOR)) {
-          return;
-        }
-        const messageNode = normalizeMessageNode(element);
-        if (messageNode instanceof HTMLElement && isConversationMessageElement(messageNode)) {
-          messageNodes.push(messageNode);
-        }
+    conversationMutationFlushTimer = setTimeout(() => {
+      conversationMutationFlushTimer = 0;
+      if (!pendingConversationMutationRefresh || !isToolkitPageVisible()) {
+        pendingConversationMutationRefresh = false;
+        return;
+      }
+      pendingConversationMutationRefresh = false;
+      markObserverWork({
+        conversationSync: true,
+        timelineRefresh: true,
       });
-    });
+    }, OBSERVER_CONVERSATION_FLUSH_DELAY_MS);
+  };
 
-    if (messageNodes.length > 0) {
-      syncMessageCacheFromNodes(toUniqueOutermostElements(messageNodes));
+  const queueSidebarMutationRefresh = () => {
+    pendingSidebarMutationRefresh = true;
+    if (sidebarMutationFlushTimer) {
+      return;
     }
+    sidebarMutationFlushTimer = setTimeout(() => {
+      sidebarMutationFlushTimer = 0;
+      if (!pendingSidebarMutationRefresh || !isToolkitPageVisible()) {
+        pendingSidebarMutationRefresh = false;
+        return;
+      }
+      pendingSidebarMutationRefresh = false;
+      markObserverWork({
+        folderRefresh: true,
+      });
+    }, OBSERVER_SIDEBAR_FLUSH_DELAY_MS);
   };
 
   const handleConversationMutations = (mutations) => {
@@ -428,13 +477,7 @@ if (!window[TOOLKIT_BOOTSTRAP_FLAG]) {
     if (!mutations.some((mutation) => mutationTouchesConversationMessage(mutation))) {
       return;
     }
-
-    syncMessageCacheFromConversationMutations(mutations);
-
-    markObserverWork({
-      conversationSync: true,
-      timelineRefresh: true,
-    });
+    queueConversationMutationRefresh();
   };
 
   const getSidebarMutationElements = (mutation) => {
@@ -474,9 +517,7 @@ if (!window[TOOLKIT_BOOTSTRAP_FLAG]) {
       element.id === "history" ||
       element.closest?.("#history") ||
       element.matches?.(".group\\/sidebar-expando-section") ||
-      element.closest?.(".group\\/sidebar-expando-section") ||
-      element.matches?.("h2.__menu-label") ||
-      element.querySelector?.("h2.__menu-label"),
+      element.closest?.(".group\\/sidebar-expando-section"),
     );
 
   const mutationTouchesFolderSidebarArea = (mutation) =>
@@ -494,9 +535,7 @@ if (!window[TOOLKIT_BOOTSTRAP_FLAG]) {
     if (!mutations.some((mutation) => mutationTouchesFolderSidebarArea(mutation))) {
       return;
     }
-    markObserverWork({
-      folderRefresh: true,
-    });
+    queueSidebarMutationRefresh();
   };
 
   const syncScopedObservers = ({ forcePresenceCheck = false, retriesRemaining = 0 } = {}) => {
@@ -546,6 +585,7 @@ if (!window[TOOLKIT_BOOTSTRAP_FLAG]) {
         timelineRefresh: forcePresenceCheck || conversationRootChanged,
         folderRefresh: forcePresenceCheck || sidebarRootChanged,
       });
+      syncDomAdapterHealth({ report: forcePresenceCheck });
     }
 
     const missingRoot =

@@ -13,7 +13,6 @@ const FOLDER_HEADER_CLASS = "chatgpt-toolkit-folder-header";
 const FOLDER_EMPTY_CLASS = "chatgpt-toolkit-folder-empty";
 const FOLDER_DRAGGING_ATTR = "data-toolkit-folder-dragging";
 const FOLDER_SORTING_ATTR = "data-toolkit-folder-sorting";
-const FOLDER_HEADING_TEXTS = ["你的聊天", "Chats", "Your chats"];
 const FOLDER_MISSING_SECTION_RETRY_LIMIT = 120;
 const FOLDER_MISSING_SECTION_RETRY_DELAY_MS = 180;
 const FOLDER_MISSING_SECTION_RETRY_SLOW_DELAY_MS = 520;
@@ -228,22 +227,17 @@ const hydrateFoldersFromExtension = async () => {
   scheduleFolderRefresh();
 };
 
-const isChatHeadingLabel = (value) => {
-  if (typeof value !== "string") {
-    return false;
+const findDirectSectionChild = (section, element) => {
+  if (!(section instanceof HTMLElement) || !(element instanceof HTMLElement)) {
+    return null;
   }
 
-  const normalized = value.trim();
-  if (!normalized) {
-    return false;
+  let current = element;
+  while (current instanceof HTMLElement && current.parentElement !== section) {
+    current = current.parentElement;
   }
 
-  if (FOLDER_HEADING_TEXTS.includes(normalized)) {
-    return true;
-  }
-
-  const lowered = normalized.toLowerCase();
-  return lowered.includes("chat") || normalized.includes("聊天");
+  return current instanceof HTMLElement && current.parentElement === section ? current : null;
 };
 
 const findFolderHistoryRoot = (section) => {
@@ -263,14 +257,39 @@ const findFolderHeaderButton = (section, history = null) => {
     return null;
   }
 
-  const headingButton = Array.from(section.querySelectorAll("button")).find(
+  const resolvedHistory = history instanceof HTMLElement ? history : findFolderHistoryRoot(section);
+  const historyDirectChild = findDirectSectionChild(section, resolvedHistory);
+  const sectionChildren = Array.from(section.children).filter((child) => child instanceof HTMLElement);
+  const historyIndex = historyDirectChild instanceof HTMLElement ? sectionChildren.indexOf(historyDirectChild) : -1;
+
+  const headingButtons = Array.from(section.querySelectorAll("button")).filter(
     (button) => button.querySelector("h2.__menu-label") instanceof HTMLElement,
   );
-  if (headingButton instanceof HTMLElement) {
-    return headingButton;
+  if (headingButtons.length > 0) {
+    if (historyIndex >= 0) {
+      let nearestButton = null;
+      let nearestIndex = -1;
+      headingButtons.forEach((button) => {
+        const directChild = findDirectSectionChild(section, button);
+        if (!(directChild instanceof HTMLElement)) {
+          return;
+        }
+
+        const index = sectionChildren.indexOf(directChild);
+        if (index >= 0 && index <= historyIndex && index >= nearestIndex) {
+          nearestButton = button;
+          nearestIndex = index;
+        }
+      });
+
+      if (nearestButton instanceof HTMLElement) {
+        return nearestButton;
+      }
+    }
+
+    return headingButtons[0];
   }
 
-  const resolvedHistory = history instanceof HTMLElement ? history : findFolderHistoryRoot(section);
   const previousSibling = resolvedHistory?.previousElementSibling;
   if (!(previousSibling instanceof HTMLElement)) {
     return null;
@@ -300,75 +319,39 @@ const findFolderAnchor = () => {
 
   const history = findFolderHistoryRoot();
   if (history instanceof HTMLElement) {
-    const section = history.closest(".group\\/sidebar-expando-section") || history.parentElement;
-    if (section instanceof HTMLElement) {
+    const directSection =
+      history.closest(".group\\/sidebar-expando-section") ||
+      history.closest("section") ||
+      history.parentElement;
+    if (directSection instanceof HTMLElement) {
       return {
-        section,
-        headerButton: findFolderHeaderButton(section, history),
+        section: directSection,
+        headerButton: findFolderHeaderButton(directSection, history),
         history,
       };
     }
   }
 
-  const sectionCandidates = Array.from(document.querySelectorAll(".group\\/sidebar-expando-section")).filter(
-    (section) => section instanceof HTMLElement,
-  );
-  for (const section of sectionCandidates) {
-    const headerButton = Array.from(section.querySelectorAll("button")).find((button) => {
-      const heading = button.querySelector("h2.__menu-label");
-      return heading instanceof HTMLElement && isChatHeadingLabel(heading.textContent || "");
-    });
-    if (headerButton instanceof HTMLElement) {
-      return {
-        section,
-        headerButton,
-        history: findFolderHistoryRoot(section),
-      };
+  const navCandidates = Array.from(
+    document.querySelectorAll('nav[aria-label], aside, [id*="sidebar"], [data-testid*="sidebar"]'),
+  ).filter((node) => node instanceof HTMLElement);
+  for (const nav of navCandidates) {
+    const navHistory = findFolderHistoryRoot(nav);
+    if (!(navHistory instanceof HTMLElement)) {
+      continue;
     }
-  }
-
-  const genericSection = sectionCandidates.find((section) =>
-    Array.from(section.querySelectorAll("button")).some(
-      (button) => button.querySelector("h2.__menu-label") instanceof HTMLElement,
-    ),
-  );
-  if (genericSection instanceof HTMLElement) {
-    const genericHistory = findFolderHistoryRoot(genericSection);
-    if (genericHistory instanceof HTMLElement) {
-      return {
-        section: genericSection,
-        headerButton: findFolderHeaderButton(genericSection, genericHistory),
-        history: genericHistory,
-      };
+    const section =
+      navHistory.closest(".group\\/sidebar-expando-section") ||
+      navHistory.closest("section") ||
+      navHistory.parentElement;
+    if (!(section instanceof HTMLElement)) {
+      continue;
     }
-  }
-
-  const heading = Array.from(document.querySelectorAll("h2.__menu-label")).find((node) =>
-    isChatHeadingLabel(node.textContent || ""),
-  );
-  if (heading instanceof HTMLElement) {
-    const headerButton = heading.closest("button");
-    const section = headerButton?.closest(".group\\/sidebar-expando-section");
-    if (section instanceof HTMLElement) {
-      return {
-        section,
-        headerButton: headerButton instanceof HTMLElement ? headerButton : findFolderHeaderButton(section),
-        history: findFolderHistoryRoot(section),
-      };
-    }
-  }
-
-  const fallbackHeading = document.querySelector("h2.__menu-label");
-  if (fallbackHeading instanceof HTMLElement) {
-    const headerButton = fallbackHeading.closest("button");
-    const section = headerButton?.closest(".group\\/sidebar-expando-section");
-    if (section instanceof HTMLElement) {
-      return {
-        section,
-        headerButton: headerButton instanceof HTMLElement ? headerButton : findFolderHeaderButton(section),
-        history: findFolderHistoryRoot(section),
-      };
-    }
+    return {
+      section,
+      headerButton: findFolderHeaderButton(section, navHistory),
+      history: navHistory,
+    };
   }
 
   return null;
@@ -398,14 +381,7 @@ const findChatHistorySection = () => {
     };
   }
 
-  const headerButton =
-    Array.from(section.querySelectorAll("button")).find((button) => {
-      const label = button.querySelector("h2.__menu-label")?.textContent?.trim();
-      if (!label) {
-        return false;
-      }
-      return FOLDER_HEADING_TEXTS.includes(label) || label.toLowerCase().includes("chat");
-    }) || fallbackHeaderButton || findFolderHeaderButton(section, history);
+  const headerButton = findFolderHeaderButton(section, history) || fallbackHeaderButton;
 
   return {
     history,
@@ -1789,7 +1765,11 @@ const ensureFolderManager = (section, headerButton) => {
     (referenceNode instanceof HTMLElement ? manager.nextElementSibling !== referenceNode : false);
 
   if (mountParent instanceof HTMLElement && needsMove) {
-    mountParent.insertBefore(manager, referenceNode);
+    if (referenceNode instanceof HTMLElement && referenceNode.parentElement === mountParent) {
+      mountParent.insertBefore(manager, referenceNode);
+    } else if (manager.parentElement !== mountParent) {
+      mountParent.prepend(manager);
+    }
   }
 
   return manager;

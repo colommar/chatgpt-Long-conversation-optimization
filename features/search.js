@@ -4,6 +4,13 @@
 
 const SEARCH_MARK_CLASS = "chatgpt-toolkit-search-text-match";
 const SEARCH_MARK_ACTIVE_CLASS = "chatgpt-toolkit-search-text-active";
+const SEARCH_BATCH_SIZE = 80;
+
+let activeSearchToken = 0;
+let searchBatchTimer = null;
+let searchInProgress = false;
+let searchProgressDone = 0;
+let searchProgressTotal = 0;
 
 const updateSearchUI = () => {
   const searchResult = document.getElementById("chatgpt-toolkit-search-result");
@@ -11,6 +18,13 @@ const updateSearchUI = () => {
   const nextBtn = document.getElementById("chatgpt-toolkit-search-next");
 
   if (!searchResult || !prevBtn || !nextBtn) {
+    return;
+  }
+
+  if (searchInProgress) {
+    searchResult.textContent = `${searchProgressDone}/${searchProgressTotal}`;
+    prevBtn.disabled = true;
+    nextBtn.disabled = true;
     return;
   }
 
@@ -26,19 +40,17 @@ const updateSearchUI = () => {
   nextBtn.disabled = state.searchMatches.length <= 1;
 };
 
+const normalizeSearchMode = (mode) =>
+  mode === TOOLKIT_MESSAGE_MODE_EXTENDED
+    ? TOOLKIT_MESSAGE_MODE_EXTENDED
+    : TOOLKIT_MESSAGE_MODE_LOADED;
+
 const getSearchMatchNode = (match) => {
   if (match instanceof HTMLElement) {
     return match;
   }
   if (typeof resolveCachedMessageNode === "function") {
     return resolveCachedMessageNode(match);
-  }
-  return match?.node instanceof HTMLElement && match.node.isConnected ? match.node : null;
-};
-
-const getSearchMatchLiveNode = (match) => {
-  if (match instanceof HTMLElement) {
-    return match;
   }
   return match?.node instanceof HTMLElement && match.node.isConnected ? match.node : null;
 };
@@ -173,22 +185,109 @@ const clearSearchHighlight = () => {
   });
 };
 
+const renderCurrentMatchTextHighlight = () => {
+  clearTextHighlights();
+
+  if (state.currentMatchIndex < 0 || state.currentMatchIndex >= state.searchMatches.length) {
+    return;
+  }
+
+  const node = getSearchMatchNode(state.searchMatches[state.currentMatchIndex]);
+  if (!(node instanceof HTMLElement)) {
+    return;
+  }
+
+  getMessageTextContainers(node).forEach((container) => {
+    injectTextHighlights(container, state.searchQuery);
+  });
+};
+
 const highlightCurrentMatch = () => {
   clearSearchHighlight();
+
   if (state.currentMatchIndex >= 0 && state.currentMatchIndex < state.searchMatches.length) {
     const node = getSearchMatchNode(state.searchMatches[state.currentMatchIndex]);
     if (node instanceof HTMLElement) {
       node.classList.add("chatgpt-toolkit-search-highlight");
     }
   }
+
+  renderCurrentMatchTextHighlight();
   updateActiveTextMark();
 };
 
-const getSearchSources = () =>
-  typeof getCachedMessageEntries === "function" ? getCachedMessageEntries() : getMessageNodes();
+const getSearchSources = (mode) =>
+  typeof getConversationMessageEntries === "function"
+    ? getConversationMessageEntries({
+        mode,
+        refreshDom: true,
+        forceRefresh: true,
+      })
+    : typeof getCachedMessageEntries === "function"
+      ? getCachedMessageEntries({ mode })
+      : getMessageNodes();
+
+const hasPotentialUnloadedMessagesAbove = () => {
+  const scrollRoot =
+    typeof resolveConversationScrollRoot === "function"
+      ? resolveConversationScrollRoot()
+      : null;
+  if (!(scrollRoot instanceof HTMLElement)) {
+    return false;
+  }
+
+  const documentLike =
+    typeof isConversationDocumentScrollRoot === "function" &&
+    isConversationDocumentScrollRoot(scrollRoot);
+  if (documentLike) {
+    const top = window.scrollY || window.pageYOffset || document.documentElement?.scrollTop || 0;
+    return top > 8;
+  }
+
+  return scrollRoot.scrollTop > 8;
+};
+
+const clearPendingSearchBatch = () => {
+  if (searchBatchTimer) {
+    clearTimeout(searchBatchTimer);
+    searchBatchTimer = null;
+  }
+};
+
+const cancelSearchRun = () => {
+  activeSearchToken += 1;
+  searchInProgress = false;
+  searchProgressDone = 0;
+  searchProgressTotal = 0;
+  clearPendingSearchBatch();
+};
+
+const finalizeSearchRun = (token, mode, matches) => {
+  if (token !== activeSearchToken) {
+    return;
+  }
+
+  searchInProgress = false;
+  searchProgressDone = searchProgressTotal;
+  state.searchMatches = matches;
+  state.currentMatchIndex = matches.length > 0 ? 0 : -1;
+
+  if (matches.length > 0) {
+    highlightCurrentMatch();
+    scrollToCurrentMatch();
+  } else if (mode === TOOLKIT_MESSAGE_MODE_LOADED && hasPotentialUnloadedMessagesAbove()) {
+    updateStatusByKey("status.searchNeedLoadMore", "info");
+  } else {
+    updateStatusByKey("status.searchNoMatch", "info");
+  }
+
+  updateSearchUI();
+};
 
 const performSearch = (query) => {
-  state.searchQuery = query.trim().toLowerCase();
+  cancelSearchRun();
+
+  state.searchQuery = (query || "").trim().toLowerCase();
   state.searchMatches = [];
   state.currentMatchIndex = -1;
 
@@ -206,28 +305,66 @@ const performSearch = (query) => {
     return;
   }
 
-  getSearchSources().forEach((source) => {
-    const text = getSearchMatchText(source).toLowerCase();
-    if (!text.includes(state.searchQuery)) {
+  const mode = normalizeSearchMode(TOOLKIT_MESSAGE_MODE);
+  const sources = getSearchSources(mode);
+  if (sources.length === 0) {
+    if (mode === TOOLKIT_MESSAGE_MODE_LOADED && hasPotentialUnloadedMessagesAbove()) {
+      updateStatusByKey("status.searchNeedLoadMore", "info");
+    } else {
+      updateStatusByKey("status.searchNoMatch", "info");
+    }
+    updateSearchUI();
+    return;
+  }
+
+  const token = ++activeSearchToken;
+  const queryLower = state.searchQuery;
+  const matches = [];
+  let cursor = 0;
+
+  searchInProgress = true;
+  searchProgressDone = 0;
+  searchProgressTotal = sources.length;
+  updateStatusByKey("status.searchScanning", "info", {
+    done: searchProgressDone,
+    total: searchProgressTotal,
+  });
+  updateSearchUI();
+
+  const runBatch = () => {
+    if (token !== activeSearchToken) {
       return;
     }
 
-    state.searchMatches.push(source);
-    const node = getSearchMatchLiveNode(source);
-    if (node instanceof HTMLElement) {
-      getMessageTextContainers(node).forEach((container) => {
-        injectTextHighlights(container, state.searchQuery);
-      });
+    const end = Math.min(cursor + SEARCH_BATCH_SIZE, sources.length);
+    for (let index = cursor; index < end; index += 1) {
+      const source = sources[index];
+      const text = getSearchMatchText(source).toLowerCase();
+      if (!text || !text.includes(queryLower)) {
+        continue;
+      }
+      matches.push(source);
     }
-  });
+    cursor = end;
+    searchProgressDone = cursor;
+    updateStatusByKey("status.searchScanning", "info", {
+      done: searchProgressDone,
+      total: searchProgressTotal,
+    });
+    updateSearchUI();
 
-  if (state.searchMatches.length > 0) {
-    state.currentMatchIndex = 0;
-    highlightCurrentMatch();
-    scrollToCurrentMatch();
-  }
+    if (cursor >= sources.length) {
+      finalizeSearchRun(token, mode, matches);
+      return;
+    }
 
-  updateSearchUI();
+    searchBatchTimer = setTimeout(() => {
+      searchBatchTimer = null;
+      runBatch();
+    }, 0);
+  };
+
+  runBatch();
 };
 
 const scrollToCurrentMatch = () => {
@@ -251,6 +388,9 @@ const scrollToCurrentMatch = () => {
 };
 
 const navigateToPrevMatch = () => {
+  if (searchInProgress) {
+    return;
+  }
   if (state.isCollapsed) {
     updateStatusByKey("status.searchRestoreFirst", "info");
     return;
@@ -267,6 +407,9 @@ const navigateToPrevMatch = () => {
 };
 
 const navigateToNextMatch = () => {
+  if (searchInProgress) {
+    return;
+  }
   if (state.isCollapsed) {
     updateStatusByKey("status.searchRestoreFirst", "info");
     return;

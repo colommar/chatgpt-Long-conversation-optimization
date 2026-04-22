@@ -3,12 +3,44 @@
  */
 const exportMessages = () => {
   ensureConversationState();
-  const visibleNodes = getMessageNodes();
-  const collapsedNodes = state.collapsedNodes.map((entry) => entry.node).filter(Boolean);
-  const nodesForExport = state.isCollapsed
-    ? [...collapsedNodes, ...visibleNodes.filter((node) => !collapsedNodes.includes(node))]
-    : visibleNodes;
-  const messages = buildMessagePayload(nodesForExport);
+  const entries = getConversationMessageEntries({
+    mode:
+      TOOLKIT_MESSAGE_MODE === TOOLKIT_MESSAGE_MODE_EXTENDED
+        ? TOOLKIT_MESSAGE_MODE_EXTENDED
+        : TOOLKIT_MESSAGE_MODE_LOADED,
+    refreshDom: true,
+    forceRefresh: true,
+  });
+  const mergedEntries = [...entries];
+  const seenKeys = new Set(entries.map((entry) => entry.key));
+
+  if (state.isCollapsed) {
+    state.collapsedNodes.forEach((entry, index) => {
+      const node = entry?.node;
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+      const key = getMessageNodeKey(node, index);
+      if (!key || seenKeys.has(key)) {
+        return;
+      }
+      const text = extractMessageText(node);
+      if (!text) {
+        return;
+      }
+      seenKeys.add(key);
+      mergedEntries.push({
+        key,
+        role: detectRole(node),
+        text,
+        order: getMessageNodeOrder(node, index),
+        node: node.isConnected ? node : null,
+        lastSeenAt: Date.now(),
+      });
+    });
+  }
+
+  const messages = buildMessagePayloadFromEntries(mergedEntries);
 
   const payload = {
     exportedAt: new Date().toISOString(),

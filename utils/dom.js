@@ -50,6 +50,7 @@ const MESSAGE_CONTENT_SELECTOR = [
   ".whitespace-pre-wrap",
 ].join(", ");
 const MESSAGE_CACHE_LIMIT = 1500;
+const MESSAGE_STORE_REFRESH_MIN_INTERVAL_MS = 90;
 const COLLAPSED_MESSAGE_ATTR = "data-chatgpt-toolkit-collapsed-message";
 
 const getConversationMain = () =>
@@ -59,22 +60,37 @@ const getConversationMain = () =>
   document.querySelector("main") ||
   document.querySelector('[role="main"]');
 
+const getSidebarHistoryRoot = () =>
+  document.querySelector("#history") ||
+  document.querySelector('nav[aria-label] #history') ||
+  document.querySelector('[id*="history"]');
+
 const isConversationDocumentScrollRoot = (root) =>
   root === document.scrollingElement ||
   root === document.documentElement ||
   root === document.body;
 
 const resolveConversationScrollRoot = () => {
-  const explicitRoot = document.querySelector("[data-scroll-root]");
-  if (explicitRoot instanceof HTMLElement) {
-    return explicitRoot;
-  }
-
-  const main = document.querySelector("main#main") || document.querySelector("main");
+  const main = getConversationMain();
   if (main instanceof HTMLElement) {
     const mainRoot = main.closest("[data-scroll-root]");
     if (mainRoot instanceof HTMLElement) {
       return mainRoot;
+    }
+
+    const scopedRoots = Array.from(document.querySelectorAll("[data-scroll-root]")).filter(
+      (root) =>
+        root instanceof HTMLElement &&
+        (root.contains(main) || main.contains(root)),
+    );
+    const scopedScrollableRoot = scopedRoots.find(
+      (root) => root.scrollHeight > root.clientHeight + 24,
+    );
+    if (scopedScrollableRoot instanceof HTMLElement) {
+      return scopedScrollableRoot;
+    }
+    if (scopedRoots[0] instanceof HTMLElement) {
+      return scopedRoots[0];
     }
 
     let current = main.parentElement;
@@ -89,6 +105,15 @@ const resolveConversationScrollRoot = () => {
       }
       current = current.parentElement;
     }
+  }
+
+  const explicitScrollableRoot = Array.from(document.querySelectorAll("[data-scroll-root]")).find(
+    (root) =>
+      root instanceof HTMLElement &&
+      root.scrollHeight > root.clientHeight + 24,
+  );
+  if (explicitScrollableRoot instanceof HTMLElement) {
+    return explicitScrollableRoot;
   }
 
   return document.scrollingElement instanceof HTMLElement ? document.scrollingElement : null;
@@ -164,6 +189,8 @@ const resetConversationState = () => {
     state.messageCache = new Map();
   }
   state.messageCacheRevision += 1;
+  state.messageStoreLastRefreshAt = 0;
+  state.messageStoreLastConversationKey = "";
   state.searchQuery = '';
   state.searchMatches = [];
   state.currentMatchIndex = -1;
@@ -179,6 +206,7 @@ const resetConversationState = () => {
     timelineState.contentHeight = 0;
     timelineState.rendered = false;
     timelineState.refreshPending = false;
+    timelineState.sourceCheckAt = 0;
   }
 };
 
@@ -357,24 +385,99 @@ const syncMessageCacheFromNodes = (nodes) => {
   return entries;
 };
 
-const getCachedMessageEntries = (options = {}) => {
+const sortMessageEntries = (entries) =>
+  entries.slice().sort((left, right) => {
+    const leftOrder = Number.isFinite(left?.order) ? left.order : Number.MAX_SAFE_INTEGER;
+    const rightOrder = Number.isFinite(right?.order) ? right.order : Number.MAX_SAFE_INTEGER;
+    if (leftOrder !== rightOrder) {
+      return leftOrder - rightOrder;
+    }
+    return (left?.lastSeenAt || 0) - (right?.lastSeenAt || 0);
+  });
+
+const isLiveMessageEntry = (entry) =>
+  entry?.node instanceof HTMLElement && entry.node.isConnected;
+
+const normalizeMessageMode = (mode) =>
+  mode === TOOLKIT_MESSAGE_MODE_EXTENDED ? TOOLKIT_MESSAGE_MODE_EXTENDED : TOOLKIT_MESSAGE_MODE_LOADED;
+
+const getLiveCachedMessageEntries = (options = {}) => {
   const { role = "" } = options;
-  getMessageNodes();
+  if (!(state.messageCache instanceof Map)) {
+    state.messageCache = new Map();
+  }
+  releaseDisconnectedCachedMessageNodes();
+  return sortMessageEntries(
+    Array.from(state.messageCache.values()).filter(
+      (entry) => (!role || entry.role === role) && isLiveMessageEntry(entry),
+    ),
+  );
+};
+
+const getConversationMessageEntries = (options = {}) => {
+  const {
+    role = "",
+    mode = TOOLKIT_MESSAGE_MODE,
+    refreshDom = true,
+    forceRefresh = false,
+  } = options;
+
+  if (refreshDom) {
+    getMessageNodes({ forceRefresh });
+  } else {
+    ensureConversationState();
+  }
+
   if (!(state.messageCache instanceof Map)) {
     state.messageCache = new Map();
   }
   releaseDisconnectedCachedMessageNodes();
 
-  return Array.from(state.messageCache.values())
-    .filter((entry) => !role || entry.role === role)
-    .sort((left, right) => {
-      const leftOrder = Number.isFinite(left.order) ? left.order : Number.MAX_SAFE_INTEGER;
-      const rightOrder = Number.isFinite(right.order) ? right.order : Number.MAX_SAFE_INTEGER;
-      if (leftOrder !== rightOrder) {
-        return leftOrder - rightOrder;
+  const normalizedMode = normalizeMessageMode(mode);
+  const includeDetached = normalizedMode === TOOLKIT_MESSAGE_MODE_EXTENDED;
+  return sortMessageEntries(
+    Array.from(state.messageCache.values()).filter((entry) => {
+      if (role && entry.role !== role) {
+        return false;
       }
-      return (left.lastSeenAt || 0) - (right.lastSeenAt || 0);
-    });
+      if (!includeDetached && !isLiveMessageEntry(entry)) {
+        return false;
+      }
+      return true;
+    }),
+  );
+};
+
+const getLoadedMessageEntries = (options = {}) =>
+  getConversationMessageEntries({
+    ...options,
+    mode: TOOLKIT_MESSAGE_MODE_LOADED,
+  });
+
+const getMessageStoreStats = () => {
+  const entries = getConversationMessageEntries({
+    mode: TOOLKIT_MESSAGE_MODE_EXTENDED,
+    refreshDom: false,
+  });
+  const loadedCount = entries.filter((entry) => isLiveMessageEntry(entry)).length;
+  return {
+    conversationKey: state.conversationKey || "",
+    totalCount: entries.length,
+    loadedCount,
+    detachedCount: Math.max(0, entries.length - loadedCount),
+    revision: state.messageCacheRevision || 0,
+    mode: normalizeMessageMode(TOOLKIT_MESSAGE_MODE),
+    lastRefreshAt: state.messageStoreLastRefreshAt || 0,
+  };
+};
+
+const getCachedMessageEntries = (options = {}) => {
+  const { role = "", mode = TOOLKIT_MESSAGE_MODE, refreshDom = true } = options;
+  return getConversationMessageEntries({
+    role,
+    mode,
+    refreshDom,
+  });
 };
 
 const resolveCachedMessageNode = (entry) => {
@@ -391,7 +494,7 @@ const resolveCachedMessageNode = (entry) => {
     return null;
   }
 
-  const nodes = getMessageNodes();
+  const nodes = getMessageNodes({ forceRefresh: true });
   const liveNode = nodes.find((node, index) => getMessageNodeKey(node, index) === key);
   if (liveNode instanceof HTMLElement) {
     entry.node = liveNode;
@@ -401,7 +504,7 @@ const resolveCachedMessageNode = (entry) => {
   return null;
 };
 
-const getMessageNodes = () => {
+const collectMessageNodesFromDom = () => {
   const main = getConversationMain();
   if (!main) {
     return [];
@@ -436,8 +539,71 @@ const getMessageNodes = () => {
     }
   });
 
-  syncMessageCacheFromNodes(uniqueNodes);
   return uniqueNodes;
+};
+
+const getMessageNodes = (options = {}) => {
+  const { forceRefresh = false, syncCache = true } = options;
+  ensureConversationState();
+
+  const conversationKey = state.conversationKey || "";
+  const now = Date.now();
+  const conversationChanged = state.messageStoreLastConversationKey !== conversationKey;
+  const shouldThrottle =
+    !forceRefresh &&
+    !conversationChanged &&
+    now - (state.messageStoreLastRefreshAt || 0) < MESSAGE_STORE_REFRESH_MIN_INTERVAL_MS;
+
+  if (shouldThrottle) {
+    return getLiveCachedMessageEntries().map((entry) => entry.node).filter(Boolean);
+  }
+
+  const uniqueNodes = collectMessageNodesFromDom();
+  if (syncCache) {
+    syncMessageCacheFromNodes(uniqueNodes);
+    state.messageStoreLastRefreshAt = now;
+    state.messageStoreLastConversationKey = conversationKey;
+  }
+  return uniqueNodes;
+};
+
+const runDomAdapterHealthCheck = (options = {}) => {
+  const { refreshMessages = false } = options;
+  ensureConversationState();
+  const conversationMain = getConversationMain();
+  const sidebarHistory = getSidebarHistoryRoot();
+  const messageCount = refreshMessages
+    ? getMessageNodes({ forceRefresh: true, syncCache: false }).length
+    : getLoadedMessageEntries({ refreshDom: false }).length;
+
+  const issues = [];
+  if (!(conversationMain instanceof HTMLElement)) {
+    issues.push("conversation-main-missing");
+  }
+  if (!(sidebarHistory instanceof HTMLElement)) {
+    issues.push("sidebar-history-missing");
+  }
+
+  const health = {
+    ok: issues.length === 0,
+    checkedAt: Date.now(),
+    conversationMainFound: conversationMain instanceof HTMLElement,
+    conversationMessageCount: messageCount,
+    sidebarHistoryFound: sidebarHistory instanceof HTMLElement,
+    issues,
+  };
+
+  const signature = JSON.stringify({
+    ok: health.ok,
+    conversationMainFound: health.conversationMainFound,
+    sidebarHistoryFound: health.sidebarHistoryFound,
+    conversationMessageCount: health.conversationMessageCount > 0 ? 1 : 0,
+    issues: health.issues,
+  });
+
+  state.domAdapterHealth = health;
+  state.domAdapterHealthSignature = signature;
+  return health;
 };
 
 const readRoleFromElement = (element) => {
@@ -552,7 +718,10 @@ const extractMessageText = (node) => {
     .join("\n\n");
 };
 
-const getUserMessageNodes = () => getMessageNodes().filter((node) => detectRole(node) === "user");
+const getUserMessageNodes = () =>
+  getLoadedMessageEntries({ role: "user" })
+    .map((entry) => entry.node)
+    .filter((node) => node instanceof HTMLElement);
 
 const isConversationMessageElement = (element) => {
   if (!(element instanceof Element)) {
@@ -599,6 +768,17 @@ const buildMessagePayload = (nodes) => {
       text: message.text,
     }));
 };
+
+const buildMessagePayloadFromEntries = (entries) =>
+  sortMessageEntries(
+    (Array.isArray(entries) ? entries : []).filter(
+      (entry) => entry && typeof entry.text === "string" && entry.text.trim(),
+    ),
+  ).map((entry, index) => ({
+    index: index + 1,
+    role: typeof entry.role === "string" ? entry.role : "unknown",
+    text: entry.text,
+  }));
 
 const updateStatus = (message, tone = "info") => {
   const status = document.getElementById(STATUS_ID);
