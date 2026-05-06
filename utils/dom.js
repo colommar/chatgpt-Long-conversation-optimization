@@ -34,7 +34,10 @@ const MESSAGE_ROLE_SELECTOR = [
   '[data-testid^="assistant-message"]',
 ].join(", ");
 
+const MESSAGE_STUB_SELECTOR = `[${TOOLKIT_MESSAGE_STUB_ATTR}="1"]`;
+
 const MESSAGE_ROOT_SELECTOR = [
+  MESSAGE_STUB_SELECTOR,
   MESSAGE_TURN_SELECTOR,
   "[data-turn-id-container]",
   "[data-message-id]",
@@ -52,6 +55,28 @@ const MESSAGE_CONTENT_SELECTOR = [
 const MESSAGE_CACHE_LIMIT = 1500;
 const MESSAGE_STORE_REFRESH_MIN_INTERVAL_MS = 90;
 const COLLAPSED_MESSAGE_ATTR = "data-chatgpt-toolkit-collapsed-message";
+
+const isToolkitMessageStubNode = (node) =>
+  node instanceof HTMLElement && node.getAttribute(TOOLKIT_MESSAGE_STUB_ATTR) === "1";
+
+const getCollapsedMessageEntryByKey = (key) => {
+  if (!key || !Array.isArray(state.collapsedNodes)) {
+    return null;
+  }
+  return state.collapsedNodes.find((entry) => entry?.key === key) || null;
+};
+
+const getStubMessageKey = (node) =>
+  isToolkitMessageStubNode(node) ? node.getAttribute(TOOLKIT_MESSAGE_KEY_ATTR) || "" : "";
+
+const getStubMessageOriginalText = (node) => {
+  const key = getStubMessageKey(node);
+  const entry = getCollapsedMessageEntryByKey(key);
+  if (typeof entry?.text === "string" && entry.text) {
+    return entry.text;
+  }
+  return node?.dataset?.messageText || node?.dataset?.messageSummary || "";
+};
 
 const getConversationMain = () =>
   document.querySelector("#thread") ||
@@ -224,6 +249,9 @@ const normalizeMessageNode = (node) => {
   if (!(node instanceof Element)) {
     return null;
   }
+  if (isToolkitMessageStubNode(node)) {
+    return node;
+  }
   const nestedTurn = node.matches("[data-turn-id-container]")
     ? node.querySelector(MESSAGE_TURN_SELECTOR)
     : null;
@@ -244,6 +272,11 @@ const getNodeConversationId = (node) =>
   null;
 
 const getMessageNodeKey = (node, index) => {
+  const stubKey = getStubMessageKey(node);
+  if (stubKey) {
+    return stubKey;
+  }
+
   const turnId =
     node?.getAttribute?.("data-turn-id") ||
     node?.querySelector?.("[data-turn-id]")?.getAttribute("data-turn-id") ||
@@ -270,10 +303,24 @@ const getMessageNodeKey = (node, index) => {
     return `tid:${testId}`;
   }
 
-  return node || `message-${index}`;
+  const order = getMessageNodeOrder(node, index);
+  const textSignature =
+    node instanceof HTMLElement
+      ? extractMessageText(node).replace(/\s+/g, " ").trim().slice(0, 96)
+      : "";
+  return textSignature
+    ? `fallback:${order}:${textSignature}`
+    : `message-${index}`;
 };
 
 const getMessageNodeOrder = (node, fallbackIndex = 0) => {
+  if (isToolkitMessageStubNode(node)) {
+    const stubOrder = Number(node.getAttribute(TOOLKIT_MESSAGE_ORDER_ATTR));
+    if (Number.isFinite(stubOrder)) {
+      return stubOrder;
+    }
+  }
+
   const candidates = [
     node?.getAttribute?.("data-testid") || "",
     node?.querySelector?.('[data-testid^="conversation-turn-"]')?.getAttribute("data-testid") || "",
@@ -293,7 +340,8 @@ const getMessageNodeOrder = (node, fallbackIndex = 0) => {
 };
 
 const isToolkitCollapsedMessageNode = (node) =>
-  node instanceof HTMLElement && node.getAttribute(COLLAPSED_MESSAGE_ATTR) === "1";
+  isToolkitMessageStubNode(node) ||
+  (node instanceof HTMLElement && node.getAttribute(COLLAPSED_MESSAGE_ATTR) === "1");
 
 const releaseDisconnectedCachedMessageNodes = () => {
   if (!(state.messageCache instanceof Map)) {
@@ -611,6 +659,13 @@ const readRoleFromElement = (element) => {
     return "";
   }
 
+  if (isToolkitMessageStubNode(element)) {
+    const stubRole = element.getAttribute(TOOLKIT_MESSAGE_ROLE_ATTR) || element.dataset?.messageRole || "";
+    if (stubRole === "user" || stubRole === "assistant" || stubRole === "system") {
+      return stubRole;
+    }
+  }
+
   const explicitRole =
     element.getAttribute("data-message-author-role") ||
     element.getAttribute("data-turn") ||
@@ -704,6 +759,7 @@ const getElementReadableText = (element) => {
         `#${MINIMIZED_ID}`,
         `#${TIMELINE_ID}`,
         `#${PROMPT_MODAL_ID}`,
+        `[${TOOLKIT_MESSAGE_STUB_ATTR}="1"]`,
       ].join(", "),
     )
     .forEach((child) => child.remove());
@@ -712,6 +768,9 @@ const getElementReadableText = (element) => {
 
 const extractMessageText = (node) => {
   if (!node) return "";
+  if (isToolkitMessageStubNode(node)) {
+    return getStubMessageOriginalText(node).trim();
+  }
   return getMessageTextContainers(node)
     .map((container) => getElementReadableText(container))
     .filter((text) => text.length > 0)

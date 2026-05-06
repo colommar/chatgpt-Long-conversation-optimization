@@ -294,12 +294,6 @@ const performSearch = (query) => {
   clearTextHighlights();
   clearSearchHighlight();
 
-  if (state.isCollapsed) {
-    updateStatusByKey("status.searchRestoreFirst", "info");
-    updateSearchUI();
-    return;
-  }
-
   if (!state.searchQuery) {
     updateSearchUI();
     return;
@@ -391,10 +385,6 @@ const navigateToPrevMatch = () => {
   if (searchInProgress) {
     return;
   }
-  if (state.isCollapsed) {
-    updateStatusByKey("status.searchRestoreFirst", "info");
-    return;
-  }
   if (state.searchMatches.length === 0) {
     return;
   }
@@ -408,10 +398,6 @@ const navigateToPrevMatch = () => {
 
 const navigateToNextMatch = () => {
   if (searchInProgress) {
-    return;
-  }
-  if (state.isCollapsed) {
-    updateStatusByKey("status.searchRestoreFirst", "info");
     return;
   }
   if (state.searchMatches.length === 0) {

@@ -78,6 +78,59 @@ const loadTimelinePosition = () => {
   }
 };
 
+const loadTocTitlesSnapshot = () => {
+  try {
+    const stored = localStorage.getItem(TOC_TITLES_STORAGE_KEY);
+    if (!stored) {
+      return {};
+    }
+    const parsed = JSON.parse(stored);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+};
+
+const saveTocTitlesSnapshot = (snapshot) => {
+  try {
+    localStorage.setItem(TOC_TITLES_STORAGE_KEY, JSON.stringify(snapshot || {}));
+  } catch (error) {
+    // Ignore storage write failures.
+  }
+};
+
+const getTocTitle = (conversationKey, messageKey) => {
+  if (!conversationKey || !messageKey) {
+    return "";
+  }
+  const snapshot = loadTocTitlesSnapshot();
+  const value = snapshot?.[conversationKey]?.[messageKey];
+  return typeof value === "string" ? value : "";
+};
+
+const saveTocTitle = (conversationKey, messageKey, title) => {
+  if (!conversationKey || !messageKey) {
+    return false;
+  }
+  const snapshot = loadTocTitlesSnapshot();
+  if (!snapshot[conversationKey] || typeof snapshot[conversationKey] !== "object") {
+    snapshot[conversationKey] = {};
+  }
+
+  const normalizedTitle = (title || "").replace(/\s+/g, " ").trim();
+  if (normalizedTitle) {
+    snapshot[conversationKey][messageKey] = normalizedTitle;
+  } else {
+    delete snapshot[conversationKey][messageKey];
+    if (Object.keys(snapshot[conversationKey]).length === 0) {
+      delete snapshot[conversationKey];
+    }
+  }
+
+  saveTocTitlesSnapshot(snapshot);
+  return true;
+};
+
 const loadMinimizedPosition = () => {
   const stored = localStorage.getItem(POSITION_KEY);
   if (!stored) {

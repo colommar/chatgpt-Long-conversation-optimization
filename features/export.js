@@ -17,24 +17,29 @@ const exportMessages = () => {
   if (state.isCollapsed) {
     state.collapsedNodes.forEach((entry, index) => {
       const node = entry?.node;
-      if (!(node instanceof HTMLElement)) {
-        return;
-      }
-      const key = getMessageNodeKey(node, index);
+      const key = entry?.key || (node instanceof HTMLElement ? getMessageNodeKey(node, index) : "");
       if (!key || seenKeys.has(key)) {
         return;
       }
-      const text = extractMessageText(node);
+      const text = typeof entry?.text === "string" && entry.text
+        ? entry.text
+        : node instanceof HTMLElement
+          ? extractMessageText(node)
+          : "";
       if (!text) {
         return;
       }
       seenKeys.add(key);
       mergedEntries.push({
         key,
-        role: detectRole(node),
+        role: entry?.role || (node instanceof HTMLElement ? detectRole(node) : "unknown"),
         text,
-        order: getMessageNodeOrder(node, index),
-        node: node.isConnected ? node : null,
+        order: Number.isFinite(entry?.order)
+          ? entry.order
+          : node instanceof HTMLElement
+            ? getMessageNodeOrder(node, index)
+            : index + 1,
+        node: node instanceof HTMLElement && node.isConnected ? node : null,
         lastSeenAt: Date.now(),
       });
     });

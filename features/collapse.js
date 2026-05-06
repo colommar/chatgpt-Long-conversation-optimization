@@ -8,7 +8,13 @@ const COLLAPSE_ARCHIVE_TRIGGER_WINDOW_MS = 2200;
 const COLLAPSE_ARCHIVE_ACTION_TEXTS = ["archive", "archived", "归档"];
 
 const getUncollapsedMessageNodes = () =>
-  getMessageNodes().filter((node) => !isToolkitCollapsedMessageNode(node));
+  getMessageNodes({ forceRefresh: true }).filter((node) => {
+    if (!(node instanceof HTMLElement) || isToolkitCollapsedMessageNode(node)) {
+      return false;
+    }
+    const role = detectRole(node);
+    return role === "user" || role === "assistant";
+  });
 
 const softCollapseMessageNode = (node) => {
   if (!(node instanceof HTMLElement)) {
@@ -26,6 +32,275 @@ const restoreSoftCollapsedMessageNode = (node) => {
   node.removeAttribute(COLLAPSED_MESSAGE_ATTR);
   node.removeAttribute("aria-hidden");
   return true;
+};
+
+const normalizeStubSummaryText = (text, maxLength = 150) => {
+  const normalized = (text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength)}...`;
+};
+
+const getMessageStubLabel = (role) =>
+  role === "user" ? t("stub.roleUser") : t("stub.roleAssistant");
+
+const createMessageStubNode = (entry) => {
+  const stub = document.createElement("div");
+  stub.className = "chatgpt-toolkit-message-stub";
+  stub.setAttribute(TOOLKIT_MESSAGE_STUB_ATTR, "1");
+  stub.setAttribute(TOOLKIT_MESSAGE_KEY_ATTR, entry.key);
+  stub.setAttribute(TOOLKIT_MESSAGE_ORDER_ATTR, String(entry.order || 0));
+  stub.setAttribute(TOOLKIT_MESSAGE_ROLE_ATTR, entry.role);
+  stub.dataset.messageRole = entry.role;
+  stub.dataset.messageSummary = normalizeStubSummaryText(entry.text);
+  stub.dataset.originalHeight = String(Math.max(0, Math.round(entry.height || 0)));
+  stub.style.setProperty(
+    "--stub-height",
+    `${Math.min(Math.max(Math.round(entry.height || 72), 56), 128)}px`,
+  );
+  stub.setAttribute(
+    "aria-label",
+    t("stub.ariaLabel", {
+      role: getMessageStubLabel(entry.role),
+      index: entry.order || 0,
+    }),
+  );
+
+  const marker = document.createElement("span");
+  marker.className = "chatgpt-toolkit-message-stub-marker";
+  marker.textContent = getMessageStubLabel(entry.role);
+
+  const body = document.createElement("span");
+  body.className = "chatgpt-toolkit-message-stub-body";
+
+  const title = document.createElement("span");
+  title.className = "chatgpt-toolkit-message-stub-title";
+  title.textContent = t("stub.title", { index: entry.order || 0 });
+
+  const summary = document.createElement("span");
+  summary.className = "chatgpt-toolkit-message-stub-summary";
+  summary.textContent = stub.dataset.messageSummary || t("stub.emptySummary");
+
+  body.appendChild(title);
+  body.appendChild(summary);
+  stub.appendChild(marker);
+  stub.appendChild(body);
+
+  const expandButton = document.createElement("button");
+  expandButton.type = "button";
+  expandButton.className = "chatgpt-toolkit-message-stub-expand";
+  expandButton.textContent = t("stub.expand");
+  expandButton.setAttribute("aria-label", t("stub.expandAria", { index: entry.order || 0 }));
+  expandButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const restoredNode = restoreMessageStubByKey(entry.key);
+    if (restoredNode instanceof HTMLElement && typeof scrollElementIntoConversationView === "function") {
+      scrollElementIntoConversationView(restoredNode, { behavior: "smooth", block: "center" });
+    }
+  });
+  stub.appendChild(expandButton);
+  return stub;
+};
+
+const getStubForEntry = (entry) => {
+  if (entry?.stub instanceof HTMLElement && entry.stub.isConnected) {
+    return entry.stub;
+  }
+  const key = entry?.key || "";
+  if (!key) {
+    return null;
+  }
+  return (
+    Array.from(document.querySelectorAll(`[${TOOLKIT_MESSAGE_STUB_ATTR}="1"]`)).find(
+      (node) => node instanceof HTMLElement && node.getAttribute(TOOLKIT_MESSAGE_KEY_ATTR) === key,
+    ) || null
+  );
+};
+
+const syncCollapsedEntryCacheNode = (entry, node) => {
+  if (!entry?.key || !(state.messageCache instanceof Map)) {
+    return;
+  }
+  const previous = state.messageCache.get(entry.key);
+  state.messageCache.set(entry.key, {
+    ...(previous || {}),
+    key: entry.key,
+    role: entry.role,
+    text: entry.text,
+    order: entry.order,
+    node: node instanceof HTMLElement && node.isConnected ? node : null,
+    lastSeenAt: Date.now(),
+  });
+  state.messageCacheRevision += 1;
+};
+
+const buildCollapsedEntryFromNode = (node, fallbackIndex = 0) => {
+  if (!(node instanceof HTMLElement) || isToolkitMessageStubNode(node)) {
+    return null;
+  }
+
+  const parent = node.parentNode;
+  if (!(parent instanceof Node)) {
+    return null;
+  }
+
+  const role = detectRole(node);
+  if (role !== "user" && role !== "assistant") {
+    return null;
+  }
+
+  const key = getMessageNodeKey(node, fallbackIndex);
+  const text = extractMessageText(node);
+  if (!key || !text) {
+    return null;
+  }
+
+  const rect = node.getBoundingClientRect();
+  return {
+    key,
+    role,
+    text,
+    order: getMessageNodeOrder(node, fallbackIndex),
+    node,
+    parent,
+    nextSibling: node.nextSibling,
+    stub: null,
+    height: rect.height || node.offsetHeight || 72,
+  };
+};
+
+const collapseMessageNodeToStub = (node, options = {}) => {
+  const {
+    refreshTimeline = true,
+    rememberState = false,
+    updateStatus = false,
+    fallbackIndex = 0,
+  } = options;
+
+  ensureConversationState();
+  const entry = buildCollapsedEntryFromNode(node, fallbackIndex);
+  if (!entry) {
+    return null;
+  }
+
+  if (!Array.isArray(state.collapsedNodes)) {
+    state.collapsedNodes = [];
+  }
+  if (state.collapsedNodes.some((collapsedEntry) => collapsedEntry?.key === entry.key)) {
+    return null;
+  }
+
+  const stub = createMessageStubNode(entry);
+  entry.stub = stub;
+  if (entry.node.parentNode) {
+    entry.node.parentNode.replaceChild(stub, entry.node);
+  }
+
+  state.collapsedNodes.push(entry);
+  state.isCollapsed = true;
+  syncCollapsedEntryCacheNode(entry, stub);
+  clearTextHighlights();
+  clearSearchHighlight();
+
+  if (rememberState && state.conversationKey) {
+    rememberConversationCollapseState(state.conversationKey);
+  }
+  if (updateStatus) {
+    updateStatusByKey("status.messageHidden", "success");
+  }
+  if (refreshTimeline && typeof scheduleTimelineRefresh === "function") {
+    scheduleTimelineRefresh();
+  }
+  return entry;
+};
+
+const collapseMessageByKey = (messageKey, options = {}) => {
+  if (!messageKey) {
+    return null;
+  }
+
+  const nodes = getMessageNodes({ forceRefresh: true });
+  const liveNodeIndex = nodes.findIndex((node, index) => getMessageNodeKey(node, index) === messageKey);
+  const liveNode = liveNodeIndex >= 0 ? nodes[liveNodeIndex] : null;
+  if (liveNode instanceof HTMLElement) {
+    return collapseMessageNodeToStub(liveNode, {
+      ...options,
+      fallbackIndex: liveNodeIndex,
+    });
+  }
+
+  const cachedEntry =
+    state.messageCache instanceof Map ? state.messageCache.get(messageKey) : null;
+  const cachedNode =
+    cachedEntry && typeof resolveCachedMessageNode === "function"
+      ? resolveCachedMessageNode(cachedEntry)
+      : cachedEntry?.node;
+  if (cachedNode instanceof HTMLElement) {
+    return collapseMessageNodeToStub(cachedNode, {
+      ...options,
+      fallbackIndex: Math.max(0, Number(cachedEntry?.order || 1) - 1),
+    });
+  }
+  return null;
+};
+
+const restoreCollapsedEntry = (entry) => {
+  const node = entry?.node;
+  if (!(node instanceof HTMLElement)) {
+    return null;
+  }
+
+  restoreSoftCollapsedMessageNode(node);
+  const stub = getStubForEntry(entry);
+  if (stub instanceof HTMLElement && stub.parentNode) {
+    stub.parentNode.replaceChild(node, stub);
+    entry.stub = null;
+    syncCollapsedEntryCacheNode(entry, node);
+    return node;
+  }
+
+  if (node.isConnected) {
+    syncCollapsedEntryCacheNode(entry, node);
+    return node;
+  }
+
+  const parent = entry.parent instanceof Node && entry.parent.isConnected ? entry.parent : null;
+  if (parent) {
+    const nextSibling =
+      entry.nextSibling instanceof Node && entry.nextSibling.parentNode === parent
+        ? entry.nextSibling
+        : null;
+    parent.insertBefore(node, nextSibling);
+    syncCollapsedEntryCacheNode(entry, node);
+    return node;
+  }
+
+  return null;
+};
+
+const restoreMessageStubByKey = (messageKey, options = {}) => {
+  const { refreshTimeline = true } = options;
+  const index = Array.isArray(state.collapsedNodes)
+    ? state.collapsedNodes.findIndex((entry) => entry?.key === messageKey)
+    : -1;
+  if (index < 0) {
+    return null;
+  }
+
+  const [entry] = state.collapsedNodes.splice(index, 1);
+  const restoredNode = restoreCollapsedEntry(entry);
+  state.isCollapsed = state.collapsedNodes.length > 0;
+  if (!state.isCollapsed) {
+    state.anchorNode = null;
+    state.anchorParent = null;
+    clearCollapseMemoryReoptimizeTimer();
+  }
+  if (refreshTimeline && typeof scheduleTimelineRefresh === "function") {
+    scheduleTimelineRefresh();
+  }
+  return restoredNode;
 };
 
 const normalizeCollapseMemorySnapshot = (snapshot) => {
@@ -485,6 +760,8 @@ const collapseOldMessages = (options = {}) => {
 
   ensureConversationState();
   const conversationKey = state.conversationKey;
+  clearTextHighlights();
+  clearSearchHighlight();
   const nodes = getUncollapsedMessageNodes();
   if (nodes.length <= state.keepLatest) {
     if (updateStatus) {
@@ -500,20 +777,59 @@ const collapseOldMessages = (options = {}) => {
   state.anchorNode = firstKeptNode;
   state.anchorParent = firstKeptNode?.parentNode;
 
-  const nextCollapsedNodes = toCollapse.map((node) => ({
-    node,
-    parent: node.parentNode,
-    soft: true,
-  }));
+  const nextCollapsedNodes = toCollapse
+    .map((node, index) => {
+      const parent = node.parentNode;
+      if (!(parent instanceof Node)) {
+        return null;
+      }
+
+      const role = detectRole(node);
+      if (role !== "user" && role !== "assistant") {
+        return null;
+      }
+
+      const key = getMessageNodeKey(node, index);
+      const text = extractMessageText(node);
+      if (!key || !text) {
+        return null;
+      }
+
+      const rect = node.getBoundingClientRect();
+      return {
+        key,
+        role,
+        text,
+        order: getMessageNodeOrder(node, index),
+        node,
+        parent,
+        nextSibling: node.nextSibling,
+        stub: null,
+        height: rect.height || node.offsetHeight || 72,
+      };
+    })
+    .filter(Boolean);
+
+  if (nextCollapsedNodes.length === 0) {
+    if (updateStatus) {
+      updateStatusByKey("status.collapseNoNeed", "info");
+    }
+    return false;
+  }
   state.collapsedNodes = state.isCollapsed
     ? state.collapsedNodes.concat(nextCollapsedNodes)
     : nextCollapsedNodes;
 
-  toCollapse.forEach((node) => softCollapseMessageNode(node));
+  nextCollapsedNodes.forEach((entry) => {
+    const stub = createMessageStubNode(entry);
+    entry.stub = stub;
+    if (entry.node.parentNode) {
+      entry.node.parentNode.replaceChild(stub, entry.node);
+      syncCollapsedEntryCacheNode(entry, stub);
+    }
+  });
 
   // 清除搜索状态和高亮
-  clearTextHighlights();
-  clearSearchHighlight();
   state.searchQuery = "";
   state.searchMatches = [];
   state.currentMatchIndex = -1;
@@ -528,7 +844,7 @@ const collapseOldMessages = (options = {}) => {
     rememberConversationCollapseState(conversationKey);
   }
   if (updateStatus) {
-    updateStatusByKey("status.collapseDone", "success", { count: toCollapse.length });
+    updateStatusByKey("status.collapseDone", "success", { count: nextCollapsedNodes.length });
   }
   renderTimeline();
   return true;
@@ -554,17 +870,22 @@ const restoreMessages = (options = {}) => {
   }
 
   // 保存当前滚动位置：记录当前可见的第一个消息节点
-  const visibleNodes = getMessageNodes();
+  const visibleNodes = getMessageNodes({ forceRefresh: true });
   let anchorElement = null;
+  let anchorMessageKey = "";
   let anchorOffsetTop = 0;
 
   if (visibleNodes.length > 0) {
     // 找到当前视口中可见的第一个消息节点（部分可见也算）
-    for (const node of visibleNodes) {
+    const orderedVisibleNodes = visibleNodes
+      .filter((node) => !isToolkitMessageStubNode(node))
+      .concat(visibleNodes.filter((node) => isToolkitMessageStubNode(node)));
+    for (const node of orderedVisibleNodes) {
       const rect = node.getBoundingClientRect();
       // 消息部分可见：底部在视口内，顶部在视口内或上方
       if (rect.bottom > 0 && rect.top < window.innerHeight) {
         anchorElement = node;
+        anchorMessageKey = getMessageNodeKey(node, 0);
         anchorOffsetTop = rect.top;
         break;
       }
@@ -572,26 +893,28 @@ const restoreMessages = (options = {}) => {
     // 如果没找到，使用第一个节点
     if (!anchorElement) {
       anchorElement = visibleNodes[0];
+      anchorMessageKey = getMessageNodeKey(anchorElement, 0);
       anchorOffsetTop = anchorElement.getBoundingClientRect().top;
     }
   }
 
-  // 使用锚点恢复：将所有隐藏的节点按顺序插入到锚点之前
-  state.collapsedNodes.forEach(({ node, parent, soft }) => {
-    if (soft || isToolkitCollapsedMessageNode(node)) {
-      restoreSoftCollapsedMessageNode(node);
-    } else if (state.anchorNode && state.anchorParent?.contains(state.anchorNode)) {
-      state.anchorParent.insertBefore(node, state.anchorNode);
-    } else if (parent) {
-      // 如果锚点不存在，尝试添加到原父节点
-      parent.appendChild(node);
-    }
+  const collapsedEntries = state.collapsedNodes.slice().reverse();
+  collapsedEntries.forEach((entry) => {
+    restoreCollapsedEntry(entry);
   });
 
   // 恢复后，滚动回之前可见的消息位置
   if (anchorElement) {
     requestAnimationFrame(() => {
-      const newRect = anchorElement.getBoundingClientRect();
+      let scrollAnchor = anchorElement;
+      if (!(scrollAnchor instanceof HTMLElement) || !scrollAnchor.isConnected) {
+        scrollAnchor =
+          collapsedEntries.find((entry) => entry?.key === anchorMessageKey)?.node || anchorElement;
+      }
+      if (!(scrollAnchor instanceof HTMLElement) || !scrollAnchor.isConnected) {
+        return;
+      }
+      const newRect = scrollAnchor.getBoundingClientRect();
       const scrollDelta = newRect.top - anchorOffsetTop;
       // 检测 ChatGPT 实际滚动容器（通常是 main 内的可滚动 div，而非 window）
       let scrollContainer = null;

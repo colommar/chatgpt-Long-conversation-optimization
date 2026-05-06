@@ -10,6 +10,8 @@ const TIMELINE_JUMP_RETRY_DELAY_MS = 180;
 const TIMELINE_JUMP_RETRY_ATTEMPTS = 4;
 const TIMELINE_JUMP_STEP_DELAY_MS = 72;
 const TIMELINE_JUMP_STEP_MAX_STEPS = 6;
+const TOC_TITLE_MAX_LENGTH = 88;
+const TOC_PREVIEW_MAX_LENGTH = 180;
 let timelineJumpResolveTimer = null;
 let timelineJumpScrollTimer = null;
 
@@ -51,6 +53,9 @@ const ensureTimelineTrackContent = (track) => {
 const getTimelineMessageKey = (node, index) => {
   if (!(node instanceof HTMLElement)) {
     return `timeline-user-${index}`;
+  }
+  if (typeof getMessageNodeKey === "function") {
+    return getMessageNodeKey(node, index);
   }
 
   const messageId =
@@ -113,17 +118,23 @@ const getTimelineSourceOrder = (source, index) => {
   return index + 1;
 };
 
+const getTimelineSourceRole = (source) => {
+  if (source instanceof HTMLElement) {
+    return typeof detectRole === "function" ? detectRole(source) : "unknown";
+  }
+  return source?.role || "unknown";
+};
+
 const getTimelineSourceNodes = () => {
   const sourceItems =
     typeof getConversationMessageEntries === "function"
       ? getConversationMessageEntries({
-          role: "user",
           mode: TOOLKIT_MESSAGE_MODE_EXTENDED,
           refreshDom: true,
         })
       : typeof getCachedMessageEntries === "function"
-        ? getCachedMessageEntries({ role: "user", mode: TOOLKIT_MESSAGE_MODE_EXTENDED })
-        : getUserMessageNodes();
+        ? getCachedMessageEntries({ mode: TOOLKIT_MESSAGE_MODE_EXTENDED })
+        : getMessageNodes();
   const fallbackItems =
     sourceItems.length > 0
       ? sourceItems
@@ -139,6 +150,10 @@ const getTimelineSourceNodes = () => {
   const seenKeys = new Set();
 
   fallbackItems.forEach((source, index) => {
+    const role = getTimelineSourceRole(source);
+    if (role !== "user" && role !== "assistant") {
+      return;
+    }
     const key = getTimelineSourceKey(source, index);
     if (!key || seenKeys.has(key)) {
       return;
@@ -154,6 +169,32 @@ const normalizeTimelineText = (text) => (text || "").replace(/\s+/g, " ").trim()
 const truncateTimelineText = (text, maxLength = 110) =>
   text.length <= maxLength ? text : `${text.slice(0, maxLength)}...`;
 const clampTimelineValue = (value, min, max) => Math.min(Math.max(value, min), max);
+const isTimelineTitleEditing = () =>
+  Boolean(document.querySelector(".chatgpt-toolkit-toc-edit-input"));
+
+const getTimelineAutoTitle = (text, index) => {
+  const normalized = normalizeTimelineText(text);
+  if (!normalized) {
+    return t("timeline.previewFallback", { index: index + 1 });
+  }
+  return truncateTimelineText(normalized, TOC_TITLE_MAX_LENGTH);
+};
+
+const getTimelineCustomTitle = (messageKey) =>
+  typeof getTocTitle === "function" ? getTocTitle(state.conversationKey || "", messageKey) : "";
+
+const getTimelineDisplayTitle = (messageKey, text, index) => {
+  const customTitle = getTimelineCustomTitle(messageKey);
+  return customTitle || getTimelineAutoTitle(text, index);
+};
+
+const isTimelineSourceStub = (source, node = null) => {
+  const sourceNode = node instanceof HTMLElement ? node : getTimelineSourceNode(source, { resolve: false });
+  return typeof isToolkitMessageStubNode === "function" && isToolkitMessageStubNode(sourceNode);
+};
+
+const getTimelineRoleLabel = (role) =>
+  role === "assistant" ? t("stub.roleAssistant") : t("stub.roleUser");
 
 const parseTimelineTimestampCandidate = (value) => {
   if (value === null || value === undefined || value === "") {
@@ -303,11 +344,20 @@ const assignTimelinePositions = (items) => {
 };
 
 const buildTimelineSignature = (items) =>
-  items.map((item) => `${item.key}:${Math.round(item.position * 1000)}`).join("|");
+  items
+    .map((item) =>
+      `${item.key}:${item.title || ""}:${item.isStub ? "stub" : "live"}:${Math.round(item.position * 1000)}`,
+    )
+    .join("|");
 
 const buildTimelineSourceSignature = (sources) =>
   `${sources.length}|${sources
-    .map((source, index) => `${getTimelineSourceKey(source, index)}:${getTimelineSourceText(source).length}`)
+    .map((source, index) => {
+      const node = getTimelineSourceNode(source, { resolve: false });
+      const stubFlag =
+        typeof isToolkitMessageStubNode === "function" && isToolkitMessageStubNode(node) ? "stub" : "live";
+      return `${getTimelineSourceKey(source, index)}:${getTimelineSourceText(source).length}:${stubFlag}`;
+    })
     .join("|")}`;
 
 const isSameTimelineSource = (sources, signature) =>
@@ -456,7 +506,8 @@ const showTimelinePreview = (index) => {
 
   timelineState.hoverIndex = index;
   preview.textContent = truncateTimelineText(
-    item.previewText || t("timeline.previewFallback", { index: item.order || index + 1 })
+    item.previewText || item.title || t("timeline.previewFallback", { index: item.order || index + 1 }),
+    TOC_PREVIEW_MAX_LENGTH,
   );
   updateTimelineBubblePlacement();
   preview.classList.add("is-visible");
@@ -652,8 +703,23 @@ const queueTimelineNodeResolveAfterJump = (index, options = {}) => {
         return;
       }
 
-      const liveNode = getTimelineSourceNode(item.source);
+      let liveNode = getTimelineSourceNode(item.source);
       if (liveNode instanceof HTMLElement && liveNode.isConnected) {
+        if (
+          typeof isToolkitMessageStubNode === "function" &&
+          isToolkitMessageStubNode(liveNode) &&
+          typeof restoreMessageStubByKey === "function"
+        ) {
+          const restoredNode = restoreMessageStubByKey(item.key, { refreshTimeline: false });
+          if (restoredNode instanceof HTMLElement && restoredNode.isConnected) {
+            liveNode = restoredNode;
+            item.isStub = false;
+            if (!(item.source instanceof HTMLElement)) {
+              item.source.node = restoredNode;
+            }
+            scheduleTimelineRefresh();
+          }
+        }
         item.node = liveNode;
         if (typeof scrollElementIntoConversationView === "function") {
           scrollElementIntoConversationView(liveNode, { behavior: "smooth", block: "center" });
@@ -732,7 +798,7 @@ const setTimelineActiveIndex = (index, options = {}) => {
   const currentOrder = Number.isFinite(item.order) ? item.order : index + 1;
   updateTimelineCount(currentOrder, timelineState.totalUserCount);
 
-  const liveNode =
+  let liveNode =
     item.node instanceof HTMLElement && item.node.isConnected
       ? item.node
       : getTimelineSourceNode(item.source);
@@ -743,6 +809,27 @@ const setTimelineActiveIndex = (index, options = {}) => {
   if (scrollToMessage && liveNode instanceof HTMLElement && liveNode.isConnected) {
     clearTimelineJumpResolveTimer();
     clearTimelineJumpScrollTimer();
+    const shouldRestoreStub =
+      typeof isToolkitMessageStubNode === "function" &&
+      isToolkitMessageStubNode(liveNode) &&
+      typeof restoreMessageStubByKey === "function";
+    if (shouldRestoreStub) {
+      if (typeof scrollElementIntoConversationView === "function") {
+        scrollElementIntoConversationView(liveNode, { behavior: "smooth", block: "center" });
+      } else {
+        liveNode.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      const restoredNode = restoreMessageStubByKey(item.key, { refreshTimeline: false });
+      if (restoredNode instanceof HTMLElement && restoredNode.isConnected) {
+        liveNode = restoredNode;
+        item.node = restoredNode;
+        if (!(item.source instanceof HTMLElement)) {
+          item.source.node = restoredNode;
+        }
+        item.isStub = false;
+        scheduleTimelineRefresh();
+      }
+    }
     if (typeof scrollElementIntoConversationView === "function") {
       scrollElementIntoConversationView(liveNode, { behavior: "smooth", block: "center" });
     } else {
@@ -770,6 +857,8 @@ const buildTimelineItemsFromSourceNodes = (sources) => {
 
   sources.forEach((source, index) => {
     const node = getTimelineSourceNode(source, { resolve: false });
+    const key = getTimelineSourceKey(source, index);
+    const role = getTimelineSourceRole(source);
     const timestamp =
       node instanceof HTMLElement
         ? extractTimelineTimestamp(node, index, previousTimestamp)
@@ -779,23 +868,247 @@ const buildTimelineItemsFromSourceNodes = (sources) => {
     previousTimestamp = timestamp;
     const previewText = normalizeTimelineText(getTimelineSourceText(source));
     withTimestamps.push({
-      key: getTimelineSourceKey(source, index),
+      key,
       source,
       node,
       timestamp,
-      order: index + 1,
+      order: getTimelineSourceOrder(source, index),
+      tocOrder: index + 1,
+      role,
       previewText,
+      autoTitle: getTimelineAutoTitle(previewText, index),
+      customTitle: getTimelineCustomTitle(key),
+      title: getTimelineDisplayTitle(key, previewText, index),
+      isStub: isTimelineSourceStub(source, node),
     });
   });
 
   const sortedItems = withTimestamps
     .slice()
-    .sort((left, right) => left.timestamp - right.timestamp);
-  const limitedItems = limitTimelineItems(sortedItems, TIMELINE_MAX_NODES);
+    .sort((left, right) => left.timestamp - right.timestamp)
+    .map((item, index) => ({ ...item, tocOrder: index + 1 }));
   return {
-    items: assignTimelinePositions(limitedItems),
+    items: assignTimelinePositions(sortedItems),
     totalUserCount: withTimestamps.length,
   };
+};
+
+const updateTimelineTocRow = (row, item, index) => {
+  if (!(row instanceof HTMLElement) || !item) {
+    return;
+  }
+
+  row.dataset.timelineIndex = String(index);
+  row.dataset.timelineKey = item.key;
+  row.className = "chatgpt-toolkit-timeline-node chatgpt-toolkit-toc-item";
+  row.classList.toggle("is-stub", Boolean(item.isStub));
+  row.classList.toggle("is-assistant", item.role === "assistant");
+  row.classList.toggle("is-user", item.role === "user");
+  row.classList.toggle("has-custom-title", Boolean(item.customTitle));
+  row.setAttribute("aria-label", t("timeline.jumpAria", { index: item.tocOrder || index + 1 }));
+
+  let jumpButton = row.querySelector(".chatgpt-toolkit-toc-jump");
+  if (!(jumpButton instanceof HTMLButtonElement)) {
+    jumpButton = document.createElement("button");
+    jumpButton.type = "button";
+    jumpButton.className = "chatgpt-toolkit-toc-jump";
+    row.appendChild(jumpButton);
+  }
+  jumpButton.dataset.timelineIndex = String(index);
+  jumpButton.dataset.timelineKey = item.key;
+  jumpButton.title = item.previewText || item.title;
+  jumpButton.setAttribute("aria-label", t("timeline.jumpAria", { index: item.tocOrder || index + 1 }));
+
+  let number = jumpButton.querySelector(".chatgpt-toolkit-toc-number");
+  if (!(number instanceof HTMLElement)) {
+    number = document.createElement("span");
+    number.className = "chatgpt-toolkit-toc-number";
+    jumpButton.appendChild(number);
+  }
+  number.textContent = String(item.tocOrder || index + 1);
+
+  let textWrap = jumpButton.querySelector(".chatgpt-toolkit-toc-text");
+  if (!(textWrap instanceof HTMLElement)) {
+    textWrap = document.createElement("span");
+    textWrap.className = "chatgpt-toolkit-toc-text";
+    jumpButton.appendChild(textWrap);
+  }
+
+  let title = textWrap.querySelector(".chatgpt-toolkit-toc-title");
+  if (!(title instanceof HTMLElement)) {
+    title = document.createElement("span");
+    title.className = "chatgpt-toolkit-toc-title";
+    textWrap.appendChild(title);
+  }
+  title.textContent = item.title || getTimelineAutoTitle(item.previewText, index);
+
+  let meta = textWrap.querySelector(".chatgpt-toolkit-toc-meta");
+  if (!(meta instanceof HTMLElement)) {
+    meta = document.createElement("span");
+    meta.className = "chatgpt-toolkit-toc-meta";
+    textWrap.appendChild(meta);
+  }
+  meta.textContent = `${getTimelineRoleLabel(item.role)} · ${
+    item.isStub ? t("timeline.stubMeta") : t("timeline.liveMeta")
+  }`;
+
+  let toggleButton = row.querySelector(".chatgpt-toolkit-toc-toggle");
+  if (!(toggleButton instanceof HTMLButtonElement)) {
+    toggleButton = document.createElement("button");
+    toggleButton.type = "button";
+    toggleButton.className = "chatgpt-toolkit-toc-toggle";
+    row.appendChild(toggleButton);
+  }
+  toggleButton.dataset.timelineIndex = String(index);
+  toggleButton.dataset.timelineKey = item.key;
+  toggleButton.dataset.timelineAction = item.isStub ? "expand" : "hide";
+  toggleButton.textContent = item.isStub ? t("timeline.expandMessage") : t("timeline.hideMessage");
+  toggleButton.title = item.isStub ? t("timeline.expandMessageTitle") : t("timeline.hideMessageTitle");
+  toggleButton.setAttribute(
+    "aria-label",
+    item.isStub ? t("timeline.expandMessageTitle") : t("timeline.hideMessageTitle"),
+  );
+
+  let editButton = row.querySelector(".chatgpt-toolkit-toc-edit");
+  if (!(editButton instanceof HTMLButtonElement)) {
+    editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "chatgpt-toolkit-toc-edit";
+    row.appendChild(editButton);
+  }
+  editButton.textContent = t("timeline.renameShort");
+  editButton.dataset.timelineIndex = String(index);
+  editButton.dataset.timelineKey = item.key;
+  editButton.title = t("timeline.renameTitle");
+  editButton.setAttribute("aria-label", t("timeline.renameTitle"));
+};
+
+const enterTimelineTitleEditMode = (row, index) => {
+  if (!(row instanceof HTMLElement) || index < 0 || index >= timelineState.items.length) {
+    return;
+  }
+  if (row.querySelector(".chatgpt-toolkit-toc-edit-input")) {
+    return;
+  }
+
+  const item = timelineState.items[index];
+  if (!item?.key) {
+    return;
+  }
+
+  const jumpButton = row.querySelector(".chatgpt-toolkit-toc-jump");
+  const editButton = row.querySelector(".chatgpt-toolkit-toc-edit");
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "chatgpt-toolkit-toc-edit-input";
+  input.value = item.customTitle || item.title || item.autoTitle || "";
+  input.setAttribute("aria-label", t("timeline.renameTitle"));
+
+  row.classList.add("is-editing");
+  if (jumpButton instanceof HTMLElement) {
+    jumpButton.hidden = true;
+  }
+  if (editButton instanceof HTMLElement) {
+    editButton.hidden = true;
+  }
+  row.appendChild(input);
+  input.focus();
+  input.select();
+
+  let isExiting = false;
+  const finish = (shouldSave) => {
+    if (isExiting) {
+      return;
+    }
+    isExiting = true;
+
+    if (shouldSave) {
+      const nextTitle = input.value.replace(/\s+/g, " ").trim();
+      if (typeof saveTocTitle === "function") {
+        saveTocTitle(state.conversationKey || "", item.key, nextTitle);
+      }
+      item.customTitle = nextTitle;
+      item.title = nextTitle || item.autoTitle || getTimelineAutoTitle(item.previewText, index);
+    }
+
+    input.remove();
+    row.classList.remove("is-editing");
+    if (jumpButton instanceof HTMLElement) {
+      jumpButton.hidden = false;
+    }
+    if (editButton instanceof HTMLElement) {
+      editButton.hidden = false;
+    }
+    updateTimelineTocRow(row, item, index);
+    updateTimelineActiveUi();
+    timelineState.signature = buildTimelineSignature(timelineState.items);
+    if (timelineState.refreshPending) {
+      timelineState.refreshPending = false;
+      scheduleTimelineRefresh();
+    }
+  };
+
+  input.addEventListener("click", (event) => event.stopPropagation());
+  input.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    if (event.key === "Enter") {
+      event.preventDefault();
+      finish(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
+};
+
+const toggleTimelineMessageVisibility = (index) => {
+  if (index < 0 || index >= timelineState.items.length) {
+    return;
+  }
+
+  const item = timelineState.items[index];
+  if (!item?.key) {
+    return;
+  }
+
+  if (item.isStub) {
+    if (typeof restoreMessageStubByKey !== "function") {
+      showTimelineHint(t("timeline.hintMessageNotLoaded"));
+      return;
+    }
+    const restoredNode = restoreMessageStubByKey(item.key, { refreshTimeline: false });
+    if (restoredNode instanceof HTMLElement && restoredNode.isConnected) {
+      item.node = restoredNode;
+      item.isStub = false;
+      if (!(item.source instanceof HTMLElement)) {
+        item.source.node = restoredNode;
+      }
+      if (typeof scrollElementIntoConversationView === "function") {
+        scrollElementIntoConversationView(restoredNode, { behavior: "smooth", block: "center" });
+      }
+      highlightTimelineMessageNode(restoredNode);
+    }
+    forceTimelineRefresh();
+    return;
+  }
+
+  if (typeof collapseMessageByKey !== "function") {
+    showTimelineHint(t("timeline.hintMessageNotLoaded"));
+    return;
+  }
+  const collapsedEntry = collapseMessageByKey(item.key, { refreshTimeline: false });
+  if (!collapsedEntry) {
+    showTimelineHint(t("timeline.hintMessageNotLoaded"));
+    return;
+  }
+
+  item.node = collapsedEntry.stub;
+  item.isStub = true;
+  if (!(item.source instanceof HTMLElement)) {
+    item.source.node = collapsedEntry.stub;
+  }
+  forceTimelineRefresh();
 };
 
 const syncTimelineNodeButtons = (content, items, contentHeight) => {
@@ -805,39 +1118,25 @@ const syncTimelineNodeButtons = (content, items, contentHeight) => {
 
   const existingButtons = Array.from(content.querySelectorAll(".chatgpt-toolkit-timeline-node"));
   const existingByKey = new Map();
-  existingButtons.forEach((button) => {
-    if (button instanceof HTMLButtonElement) {
-      const key = button.dataset.timelineKey || "";
+  existingButtons.forEach((node) => {
+    if (node instanceof HTMLElement) {
+      const key = node.dataset.timelineKey || "";
       if (key) {
-        existingByKey.set(key, button);
+        existingByKey.set(key, node);
       }
     }
   });
 
   const fragment = document.createDocumentFragment();
-  const verticalPadding = 10;
-  const usableHeight = Math.max(1, contentHeight - verticalPadding * 2);
 
   items.forEach((item, index) => {
     let nodeButton = existingByKey.get(item.key);
-    if (!(nodeButton instanceof HTMLButtonElement)) {
-      nodeButton = document.createElement("button");
-      nodeButton.type = "button";
-      nodeButton.className = "chatgpt-toolkit-timeline-node";
-      nodeButton.innerHTML = `<span class="chatgpt-toolkit-timeline-dot"></span>`;
+    if (!(nodeButton instanceof HTMLElement)) {
+      nodeButton = document.createElement("div");
     }
 
     existingByKey.delete(item.key);
-    nodeButton.dataset.timelineIndex = String(index);
-    nodeButton.dataset.timelineKey = item.key;
-    nodeButton.setAttribute("aria-label", t("timeline.jumpAria", { index: item.order || index + 1 }));
-
-    const topPx = verticalPadding + item.position * usableHeight;
-    const nextTop = `${topPx.toFixed(2)}px`;
-    if (nodeButton.style.top !== nextTop) {
-      nodeButton.style.top = nextTop;
-    }
-
+    updateTimelineTocRow(nodeButton, item, index);
     fragment.appendChild(nodeButton);
   });
 
@@ -1209,7 +1508,7 @@ const updateTimelinePosition = () => {
   const rect = timeline.getBoundingClientRect();
   const width = rect.width || timeline.offsetWidth || 64;
   const height = rect.height || timeline.offsetHeight || Math.round(window.innerHeight * 0.65);
-  const maxLeft = Math.max(8, window.innerWidth - 80);
+  const maxLeft = Math.max(8, window.innerWidth - width - TIMELINE_DRAG_MARGIN);
   const left = Math.min(maxLeft, Math.max(8, Math.round(rightEdge + 10)));
   const maxTop = Math.max(TIMELINE_DRAG_MARGIN, window.innerHeight - height - TIMELINE_DRAG_MARGIN);
   const top = clampTimelineValue(
@@ -1441,6 +1740,39 @@ const handleTimelineWheel = (event) => {
 
 const handleTimelineClick = (event) => {
   const target = event.target;
+  const toggleButton =
+    target instanceof Element
+      ? target.closest(".chatgpt-toolkit-toc-toggle")
+      : target instanceof Node && target.parentElement
+        ? target.parentElement.closest(".chatgpt-toolkit-toc-toggle")
+        : null;
+  if (toggleButton instanceof HTMLElement) {
+    event.preventDefault();
+    event.stopPropagation();
+    const index = Number(toggleButton.dataset.timelineIndex);
+    if (!Number.isNaN(index)) {
+      toggleTimelineMessageVisibility(index);
+    }
+    return;
+  }
+
+  const editButton =
+    target instanceof Element
+      ? target.closest(".chatgpt-toolkit-toc-edit")
+      : target instanceof Node && target.parentElement
+        ? target.parentElement.closest(".chatgpt-toolkit-toc-edit")
+        : null;
+  if (editButton instanceof HTMLElement) {
+    event.preventDefault();
+    event.stopPropagation();
+    const index = Number(editButton.dataset.timelineIndex);
+    if (!Number.isNaN(index)) {
+      const row = editButton.closest(".chatgpt-toolkit-timeline-node");
+      enterTimelineTitleEditMode(row, index);
+    }
+    return;
+  }
+
   const nodeButton =
     target instanceof Element
       ? target.closest("[data-timeline-index]")
@@ -1675,7 +2007,14 @@ const refreshTimelineLocalization = () => {
       return;
     }
     const item = timelineState.items[index];
-    node.setAttribute("aria-label", t("timeline.jumpAria", { index: item?.order || index + 1 }));
+    if (item) {
+      item.autoTitle = getTimelineAutoTitle(item.previewText, index);
+      item.customTitle = getTimelineCustomTitle(item.key);
+      item.title = item.customTitle || item.autoTitle;
+      updateTimelineTocRow(node, item, index);
+    } else {
+      node.setAttribute("aria-label", t("timeline.jumpAria", { index: index + 1 }));
+    }
   });
 
   hideTimelinePreview();
@@ -1816,6 +2155,10 @@ const renderTimeline = () => {
     markTimelineRefreshPending();
     return;
   }
+  if (isTimelineTitleEditing()) {
+    markTimelineRefreshPending();
+    return;
+  }
   timelineState.refreshPending = false;
   // 标记正在渲染，防止 MutationObserver 循环触发
   window.__toolkitIsRendering = true;
@@ -1856,8 +2199,9 @@ const renderTimeline = () => {
   const nextItems = sourceStable ? timelineState.items : timelineData.items;
   const totalUserCount = sourceStable ? sourceNodes.length : timelineData.totalUserCount;
   const nextSignature = sourceStable ? timelineState.signature : buildTimelineSignature(nextItems);
-  const contentHeight = calculateTimelineContentHeight(track.clientHeight, nextItems.length);
-  content.style.height = `${contentHeight}px`;
+  const contentHeight = nextItems.length;
+  content.style.height = "auto";
+  content.style.minHeight = `${Math.max(track.clientHeight, 1)}px`;
   const shouldRebuild =
     !timelineState.rendered ||
     !sourceStable ||
@@ -1867,7 +2211,7 @@ const renderTimeline = () => {
   if (shouldRebuild) {
     syncTimelineNodeButtons(content, nextItems, contentHeight);
 
-    const nextMaxScroll = Math.max(0, contentHeight - track.clientHeight);
+    const nextMaxScroll = Math.max(0, track.scrollHeight - track.clientHeight);
     if (nextMaxScroll > 0) {
       if (previousMaxScroll > 0) {
         const scrollRatio = previousScrollTop / previousMaxScroll;
