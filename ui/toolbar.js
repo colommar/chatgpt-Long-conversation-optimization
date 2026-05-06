@@ -1,7 +1,7 @@
 /*
  * ChatGPT Conversation Toolkit - Toolbar and drag behavior
  */
-const TOOLKIT_REPO_URL = "https://github.com/bujue3709/chatgpt-Long-conversation-optimization";
+const TOOLKIT_REPO_URL = "https://github.com/colommar/chatgpt-Long-conversation-optimization";
 const TOOLKIT_FEEDBACK_URL = `${TOOLKIT_REPO_URL}/issues/new`;
 
 const getSnappedFloatingButtonPlacement = (left, top, width, height) => {
