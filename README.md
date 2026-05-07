@@ -4,6 +4,18 @@
 
 基于bujue3709大佬的项目fork后再开发完成。
 
+# feat: 引入长会话 Stub 替换与可编辑 TOC
+
+- 用轻量 Stub DOM 节点替换早期 user/assistant 消息，并支持整体与单条恢复
+
+- 将时间线升级为 TOC，展示 user/assistant 摘要、跳转与明确高亮
+
+- 支持 TOC 标题编辑持久化，以及在 TOC 中手动隐藏/展开消息
+
+- 让搜索和导出在 Stub 状态下继续使用缓存消息文本
+
+- 补充 Stub、TOC、编辑、高亮与中英文文案样式
+
 ## License 📄
 
 本项目采用 [MIT License](./LICENSE)。
